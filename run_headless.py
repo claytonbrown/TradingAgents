@@ -527,6 +527,7 @@ class HeadlessRunner:
 
         def _worker(worker_id: int, ticker: str) -> dict[str, Any]:
             wlog = logging.getLogger(f"headless.W{worker_id}")
+            self.spend.check()
             wlog.info("[W%d] Starting %s", worker_id, ticker)
             result = self._analyse_ticker(ticker, ctx)
             result = self.post_analysis(ticker, result)
