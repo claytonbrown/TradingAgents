@@ -116,6 +116,10 @@ class BudgetExceededError(RuntimeError):
     """Raised when --max-cost budget cap is reached."""
 
 
+class TickerLockError(RuntimeError):
+    """Raised when a distributed lock cannot be acquired for a ticker."""
+
+
 class SpendTracker:
     """Thread-safe in-memory USD spend tracker for --max-cost budget cap."""
 
@@ -311,6 +315,15 @@ class RedisBackend:
                 if cursor == 0:
                     break
             logger.info("Cleared Redis checkpoints for %s", ticker)
+
+    def acquire_lock(self, ticker: str, ttl: int = 600) -> bool:
+        """Acquire a distributed lock for a ticker. Returns True if acquired."""
+        key = f"tradingagents:lock:{ticker}"
+        return bool(self.conn.set(key, "1", nx=True, ex=ttl))
+
+    def release_lock(self, ticker: str) -> None:
+        """Release the distributed lock for a ticker."""
+        self.conn.delete(f"tradingagents:lock:{ticker}")
 
     def enqueue_tickers(self, tickers: list[str]) -> int:
         """LPUSH tickers to the Redis task queue. Returns count enqueued."""
@@ -541,6 +554,23 @@ class HeadlessRunner:
 
     def _analyse_ticker(self, ticker: str, ctx: dict[str, Any]) -> dict[str, Any]:
         """Run analysis for a single ticker via TradingAgentsGraph.propagate()."""
+        # Acquire distributed lock in cluster mode to prevent duplicate work
+        locked = False
+        if self.redis_backend:
+            locked = self.redis_backend.acquire_lock(ticker)
+            if not locked:
+                raise TickerLockError(f"Could not acquire lock for {ticker} — another node is processing it")
+            logger.debug("Acquired distributed lock for %s", ticker)
+
+        try:
+            return self._run_analysis(ticker, ctx)
+        finally:
+            if locked:
+                self.redis_backend.release_lock(ticker)
+                logger.debug("Released distributed lock for %s", ticker)
+
+    def _run_analysis(self, ticker: str, ctx: dict[str, Any]) -> dict[str, Any]:
+        """Execute the actual analysis pipeline for a ticker."""
         from tradingagents.default_config import DEFAULT_CONFIG
         from tradingagents.graph.trading_graph import TradingAgentsGraph
 
