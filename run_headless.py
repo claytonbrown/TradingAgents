@@ -154,6 +154,9 @@ class HeadlessRunner:
             logger.error("No tickers specified (use --ticker or --tickers)")
             return 2
 
+        if self.args.clear_checkpoints:
+            self._clear_checkpoints()
+
         total = len(self.tickers)
         logger.info("Batch: %d ticker(s) — %s", total, ", ".join(self.tickers))
 
@@ -271,6 +274,14 @@ class HeadlessRunner:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _clear_checkpoints(self) -> None:
+        """Delete existing checkpoint DBs for the current ticker list."""
+        for ticker in self.tickers:
+            db_path = Path(f"checkpoints_{ticker}.db")
+            if db_path.exists():
+                db_path.unlink()
+                logger.info("Cleared checkpoint: %s", db_path)
 
     def _make_checkpointer(self, ticker: str):
         """Create a per-ticker SqliteSaver for crash recovery."""
