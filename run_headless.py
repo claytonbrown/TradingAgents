@@ -16,6 +16,9 @@ from typing import Any
 
 logger = logging.getLogger("headless")
 
+# Queue name used for Redis task queue (tasks 15+)
+REDIS_QUEUE_KEY = "tradingagents:queue"
+
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -160,6 +163,90 @@ class CostLogger:
                 f.write(line)
 
 
+def _require_redis(module_name: str = "redis"):
+    """Import and return the redis module, raising a clear error if missing."""
+    try:
+        import redis
+        return redis
+    except ImportError:
+        raise SystemExit(
+            f"Redis mode requires the '{module_name}' package. "
+            "Install with: pip install tradingagents[distributed]"
+        )
+
+
+class RedisSpendTracker:
+    """Redis-backed USD spend tracker using INCRBYFLOAT for cross-node budget."""
+
+    REDIS_KEY = "tradingagents:spend_total"
+
+    def __init__(self, rconn: Any, max_cost: float = 0) -> None:
+        self.max_cost = max_cost
+        self._r = rconn
+
+    @property
+    def total(self) -> float:
+        val = self._r.get(self.REDIS_KEY)
+        return float(val) if val else 0.0
+
+    def check(self) -> None:
+        if self.max_cost > 0 and self.total >= self.max_cost:
+            raise BudgetExceededError(
+                f"Budget cap ${self.max_cost:.2f} reached (spent ${self.total:.2f})"
+            )
+
+    def add(self, amount: float) -> None:
+        new_total = self._r.incrbyfloat(self.REDIS_KEY, amount)
+        if self.max_cost > 0 and float(new_total) > self.max_cost:
+            logger.warning("Budget cap exceeded: $%.2f / $%.2f", float(new_total), self.max_cost)
+
+
+class RedisCostLogger:
+    """Cost logger that writes to a Redis stream (XADD) with local JSONL fallback."""
+
+    STREAM_KEY = "tradingagents:cost_log"
+
+    def __init__(self, rconn: Any, fallback_path: Path = Path("cost_log.jsonl")) -> None:
+        self._r = rconn
+        self._fallback = CostLogger(fallback_path)
+
+    def log(self, ticker: str, cost_usd: float, **extra: Any) -> None:
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticker": ticker,
+            "cost_usd": str(cost_usd),
+            **{k: str(v) for k, v in extra.items()},
+        }
+        try:
+            self._r.xadd(self.STREAM_KEY, entry)
+        except Exception:
+            logger.debug("Redis XADD failed, falling back to local JSONL")
+            self._fallback.log(ticker, cost_usd, **extra)
+
+
+class RedisBackend:
+    """Holds the Redis connection and provides factory methods for Redis-backed components."""
+
+    def __init__(self, redis_url: str) -> None:
+        redis_mod = _require_redis()
+        self.conn = redis_mod.Redis.from_url(redis_url, decode_responses=True)
+        # Verify connectivity
+        self.conn.ping()
+        logger.info("Redis connected: %s", redis_url)
+
+    def make_spend_tracker(self, max_cost: float) -> RedisSpendTracker:
+        return RedisSpendTracker(self.conn, max_cost=max_cost)
+
+    def make_cost_logger(self, fallback_path: Path) -> RedisCostLogger:
+        return RedisCostLogger(self.conn, fallback_path=fallback_path)
+
+    def make_checkpointer(self, ticker: str) -> Any:
+        """Create a Redis-backed checkpointer (task 14)."""
+        from langgraph.checkpoint.redis import RedisSaver
+
+        return RedisSaver.from_conn_string(self.conn.connection_pool.connection_kwargs.get("url", ""))
+
+
 class HeadlessRunner:
     """Base headless runner — subclass and override hooks for customisation."""
 
@@ -167,11 +254,25 @@ class HeadlessRunner:
         self.args = args
         self.tickers = parse_tickers(args)
         self.config_overrides = parse_config_overrides(args.config)
-        self.spend = SpendTracker(max_cost=args.max_cost)
-        self.cost_logger = CostLogger(
-            args.output_dir / "cost_log.jsonl" if args.output_dir else Path("cost_log.jsonl")
-        )
         self._setup_logging()
+
+        # Validate Redis-only flags
+        if (args.enqueue or args.consume) and not args.redis:
+            raise SystemExit("--enqueue and --consume require --redis")
+
+        # Mode selection: --redis → cluster, else single-node
+        self.redis_backend: RedisBackend | None = None
+        cost_log_path = args.output_dir / "cost_log.jsonl" if args.output_dir else Path("cost_log.jsonl")
+
+        if args.redis:
+            self.redis_backend = RedisBackend(args.redis)
+            self.spend = self.redis_backend.make_spend_tracker(max_cost=args.max_cost)
+            self.cost_logger = self.redis_backend.make_cost_logger(fallback_path=cost_log_path)
+            logger.info("Cluster mode: all shared state via Redis")
+        else:
+            self.spend = SpendTracker(max_cost=args.max_cost)
+            self.cost_logger = CostLogger(cost_log_path)
+            logger.info("Single-node mode: threads + SQLite")
 
     # ------------------------------------------------------------------
     # Hooks (override in subclasses)
@@ -352,7 +453,9 @@ class HeadlessRunner:
                 logger.info("Cleared checkpoint: %s", db_path)
 
     def _make_checkpointer(self, ticker: str):
-        """Create a per-ticker SqliteSaver for crash recovery."""
+        """Create a per-ticker checkpointer (SQLite or Redis based on mode)."""
+        if self.redis_backend:
+            return self.redis_backend.make_checkpointer(ticker)
         from langgraph.checkpoint.sqlite import SqliteSaver
 
         db_path = Path(f"checkpoints_{ticker}.db")
