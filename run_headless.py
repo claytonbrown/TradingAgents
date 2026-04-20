@@ -7,6 +7,7 @@ import argparse
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -157,9 +158,34 @@ class HeadlessRunner:
         logger.info("Batch: %d ticker(s) — %s", total, ", ".join(self.tickers))
 
         ctx = self.pre_analysis()
+        workers = max(1, self.args.workers)
+
+        if workers > 1 and total > 1:
+            results, failures = self._run_parallel(ctx, workers)
+        else:
+            results, failures = self._run_sequential(ctx)
+
+        logger.info("Done: %d succeeded, %d failed", len(results), failures)
+
+        if self.args.output_dir and results:
+            self._write_output_dir(results)
+
+        if results:
+            output = self.format_report(results)
+            if output:
+                print(output)
+
+        if failures == 0:
+            return 0
+        if results:
+            return 1
+        return 2
+
+    def _run_sequential(self, ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
+        """Run tickers one at a time."""
         results: list[dict[str, Any]] = []
         failures = 0
-
+        total = len(self.tickers)
         for i, ticker in enumerate(self.tickers, 1):
             logger.info("[%d/%d] %s", i, total, ticker)
             try:
@@ -169,25 +195,40 @@ class HeadlessRunner:
             except Exception:
                 logger.exception("Failed: %s", ticker)
                 failures += 1
+        return results, failures
 
-        logger.info("Done: %d succeeded, %d failed", len(results), failures)
+    def _run_parallel(self, ctx: dict[str, Any], workers: int) -> tuple[list[dict[str, Any]], int]:
+        """Run tickers concurrently via ThreadPoolExecutor."""
+        results: list[dict[str, Any]] = []
+        failures = 0
+        stagger = self.args.stagger_delay
 
-        # Write per-ticker files if --output-dir
-        if self.args.output_dir and results:
-            self._write_output_dir(results)
+        def _worker(worker_id: int, ticker: str) -> dict[str, Any]:
+            wlog = logging.getLogger(f"headless.W{worker_id}")
+            wlog.info("[W%d] Starting %s", worker_id, ticker)
+            result = self._analyse_ticker(ticker, ctx)
+            result = self.post_analysis(ticker, result)
+            wlog.info("[W%d] Finished %s — %s", worker_id, ticker, result["decision"])
+            return result
 
-        # Output
-        if results:
-            output = self.format_report(results)
-            if output:
-                print(output)
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            futures = {}
+            for i, ticker in enumerate(self.tickers):
+                if i > 0 and stagger > 0:
+                    time.sleep(stagger)
+                worker_id = (i % workers) + 1
+                fut = pool.submit(_worker, worker_id, ticker)
+                futures[fut] = ticker
 
-        # Exit codes: 0=all ok, 1=partial, 2=total failure
-        if failures == 0:
-            return 0
-        if results:
-            return 1
-        return 2
+            for fut in as_completed(futures):
+                ticker = futures[fut]
+                try:
+                    results.append(fut.result())
+                except Exception:
+                    logger.exception("Failed: %s", ticker)
+                    failures += 1
+
+        return results, failures
 
     def _analyse_ticker(self, ticker: str, ctx: dict[str, Any]) -> dict[str, Any]:
         """Run analysis for a single ticker via TradingAgentsGraph.propagate()."""
@@ -198,10 +239,12 @@ class HeadlessRunner:
         config["max_debate_rounds"] = DEPTH_TO_ROUNDS[self.args.depth]
         config.update(self.config_overrides)
 
+        checkpointer = self._make_checkpointer(ticker) if self.args.checkpoint else None
+
         logger.info("Analysing %s (date=%s, depth=%s)", ticker, self.args.date, self.args.depth)
         t0 = time.time()
 
-        ta = TradingAgentsGraph(debug=self.args.verbose, config=config)
+        ta = TradingAgentsGraph(debug=self.args.verbose, config=config, checkpointer=checkpointer)
         final_state, decision = ta.propagate(ticker, self.args.date)
 
         elapsed = time.time() - t0
@@ -228,6 +271,13 @@ class HeadlessRunner:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _make_checkpointer(self, ticker: str):
+        """Create a per-ticker SqliteSaver for crash recovery."""
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        db_path = Path(f"checkpoints_{ticker}.db")
+        return SqliteSaver.from_conn_string(str(db_path))
 
     def _write_output_dir(self, results: list[dict[str, Any]]) -> None:
         """Write per-ticker JSON and markdown decision files to --output-dir."""

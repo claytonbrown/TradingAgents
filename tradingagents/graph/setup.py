@@ -27,7 +27,7 @@ class GraphSetup:
         self.conditional_logic = conditional_logic
 
     def setup_graph(
-        self, selected_analysts=["market", "social", "news", "fundamentals"]
+        self, selected_analysts=["market", "social", "news", "fundamentals"], checkpointer=None
     ):
         """Set up and compile the agent workflow graph.
 
@@ -37,6 +37,7 @@ class GraphSetup:
                 - "social": Social media analyst
                 - "news": News analyst
                 - "fundamentals": Fundamentals analyst
+            checkpointer: Optional LangGraph checkpointer (e.g. SqliteSaver) for crash recovery.
         """
         if len(selected_analysts) == 0:
             raise ValueError("Trading Agents Graph Setup Error: no analysts selected!")

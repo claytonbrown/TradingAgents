@@ -55,6 +55,7 @@ class TradingAgentsGraph:
         debug=False,
         config: Dict[str, Any] = None,
         callbacks: Optional[List] = None,
+        checkpointer=None,
     ):
         """Initialize the trading agents graph and components.
 
@@ -63,6 +64,7 @@ class TradingAgentsGraph:
             debug: Whether to run in debug mode
             config: Configuration dictionary. If None, uses default config
             callbacks: Optional list of callback handlers (e.g., for tracking LLM/tool stats)
+            checkpointer: Optional LangGraph checkpointer for crash recovery
         """
         self.debug = debug
         self.config = config or DEFAULT_CONFIG
