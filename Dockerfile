@@ -8,7 +8,7 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 WORKDIR /build
 COPY . .
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[distributed]"
 
 FROM python:3.12-slim
 
@@ -24,4 +24,5 @@ WORKDIR /home/appuser/app
 
 COPY --from=builder --chown=appuser:appuser /build .
 
-ENTRYPOINT ["tradingagents"]
+ENTRYPOINT ["tradingagents-headless"]
+CMD ["--help"]
