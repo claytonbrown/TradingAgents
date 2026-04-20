@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json as _json
 import logging
+import os
 import sys
 import threading
 import time
@@ -15,6 +16,9 @@ from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger("headless")
+
+# Thread-local storage for worker prefix in log messages
+_worker_local = threading.local()
 
 # Queue name used for Redis task queue (tasks 15+)
 REDIS_QUEUE_KEY = "tradingagents:queue"
@@ -526,12 +530,12 @@ class HeadlessRunner:
         stagger = self.args.stagger_delay
 
         def _worker(worker_id: int, ticker: str) -> dict[str, Any]:
-            wlog = logging.getLogger(f"headless.W{worker_id}")
+            _worker_local.prefix = f" [W{worker_id}]"
             self.spend.check()
-            wlog.info("[W%d] Starting %s", worker_id, ticker)
+            logger.info("Starting %s", ticker)
             result = self._analyse_ticker(ticker, ctx)
             result = self.post_analysis(ticker, result)
-            wlog.info("[W%d] Finished %s — %s", worker_id, ticker, result["decision"])
+            logger.info("Finished %s — %s", ticker, result["decision"])
             return result
 
         with ThreadPoolExecutor(max_workers=workers) as pool:
@@ -589,11 +593,23 @@ class HeadlessRunner:
 
         elapsed = time.time() - t0
 
-        # Log cost per ticker (estimate from token usage if available)
+        # Extract token/cost info from final state
         cost_usd = final_state.get("cost_usd", 0.0)
+        tokens_in = final_state.get("tokens_in", 0)
+        tokens_out = final_state.get("tokens_out", 0)
+
+        # Per-ticker token/cost to stderr
+        cost_parts = [f"{ticker}: {elapsed:.1f}s"]
+        if tokens_in or tokens_out:
+            cost_parts.append(f"tokens={tokens_in}in/{tokens_out}out")
+        if cost_usd:
+            cost_parts.append(f"${cost_usd:.4f}")
+        logger.info("  %s", " | ".join(cost_parts))
+
         if cost_usd:
             self.spend.add(cost_usd)
-            self.cost_logger.log(ticker, cost_usd, elapsed_seconds=round(elapsed, 1))
+            self.cost_logger.log(ticker, cost_usd, elapsed_seconds=round(elapsed, 1),
+                                 tokens_in=tokens_in, tokens_out=tokens_out)
 
         return {
             "ticker": ticker,
@@ -611,6 +627,9 @@ class HeadlessRunner:
                 "model": config.get("deep_think_llm", ""),
                 "debate_rounds": config["max_debate_rounds"],
                 "elapsed_seconds": round(elapsed, 1),
+                "tokens_in": tokens_in,
+                "tokens_out": tokens_out,
+                "cost_usd": cost_usd,
             },
         }
 
@@ -661,10 +680,21 @@ class HeadlessRunner:
     def _setup_logging(self) -> None:
         level = logging.WARNING if self.args.quiet else (logging.DEBUG if self.args.verbose else logging.INFO)
         handler = logging.StreamHandler(sys.stderr)
-        handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
+        handler.setFormatter(_WorkerFormatter())
         root = logging.getLogger("headless")
         root.setLevel(level)
         root.addHandler(handler)
+
+
+class _WorkerFormatter(logging.Formatter):
+    """Log formatter that prepends worker prefix from thread-local storage."""
+
+    def format(self, record: logging.LogRecord) -> str:
+        prefix = getattr(_worker_local, "prefix", "")
+        msg = f"[{record.levelname}]{prefix} {record.getMessage()}"
+        if record.exc_info:
+            msg += "\n" + self.formatException(record.exc_info)
+        return msg
 
 
 def main(argv: list[str] | None = None) -> int:
