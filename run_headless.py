@@ -115,6 +115,13 @@ def parse_config_overrides(pairs: list[str]) -> dict[str, Any]:
 
 DEPTH_TO_ROUNDS = {"shallow": 1, "medium": 3, "deep": 5}
 
+# Model tier presets: (deep_think_llm, quick_think_llm)
+MODEL_TIERS = {
+    "deep": ("gpt-5.4", "gpt-5.4"),
+    "standard": ("gpt-5.4", "gpt-5.4-mini"),
+    "light": ("gpt-5.4-mini", "gpt-5.4-mini"),
+}
+
 
 class BudgetExceededError(RuntimeError):
     """Raised when --max-cost budget cap is reached."""
@@ -586,6 +593,14 @@ class HeadlessRunner:
 
         config = DEFAULT_CONFIG.copy()
         config["max_debate_rounds"] = DEPTH_TO_ROUNDS[self.args.depth]
+
+        # Apply --model-tier override
+        tier = self.args.model_tier
+        if tier != "auto" and tier in MODEL_TIERS:
+            deep, quick = MODEL_TIERS[tier]
+            config["deep_think_llm"] = deep
+            config["quick_think_llm"] = quick
+
         config.update(self.config_overrides)
 
         checkpointer = self._make_checkpointer(ticker) if self.args.checkpoint else None
