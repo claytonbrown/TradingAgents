@@ -273,6 +273,7 @@ class RedisBackend:
 
     def __init__(self, redis_url: str) -> None:
         redis_mod = _require_redis()
+        self.url = redis_url
         self.conn = redis_mod.Redis.from_url(redis_url, decode_responses=True)
         # Verify connectivity
         self.conn.ping()
@@ -288,10 +289,28 @@ class RedisBackend:
         return RedisCache(self.conn)
 
     def make_checkpointer(self, ticker: str) -> Any:
-        """Create a Redis-backed checkpointer (task 14)."""
-        from langgraph.checkpoint.redis import RedisSaver
+        """Create a Redis-backed checkpointer keyed by ticker."""
+        try:
+            from langgraph.checkpoint.redis import RedisSaver
+        except ImportError:
+            raise SystemExit(
+                "Redis checkpoints require 'langgraph-checkpoint-redis'. "
+                "Install with: pip install tradingagents[distributed]"
+            )
+        return RedisSaver.from_conn_string(self.url)
 
-        return RedisSaver.from_conn_string(self.conn.connection_pool.connection_kwargs.get("url", ""))
+    def clear_checkpoints(self, tickers: list[str]) -> None:
+        """Delete Redis checkpoint keys for the given tickers."""
+        for ticker in tickers:
+            pattern = f"checkpoint:{ticker}:*"
+            cursor = 0
+            while True:
+                cursor, keys = self.conn.scan(cursor, match=pattern, count=100)
+                if keys:
+                    self.conn.delete(*keys)
+                if cursor == 0:
+                    break
+            logger.info("Cleared Redis checkpoints for %s", ticker)
 
 
 class HeadlessRunner:
@@ -494,7 +513,10 @@ class HeadlessRunner:
     # ------------------------------------------------------------------
 
     def _clear_checkpoints(self) -> None:
-        """Delete existing checkpoint DBs for the current ticker list."""
+        """Delete existing checkpoints (SQLite files or Redis keys)."""
+        if self.redis_backend:
+            self.redis_backend.clear_checkpoints(self.tickers)
+            return
         for ticker in self.tickers:
             db_path = Path(f"checkpoints_{ticker}.db")
             if db_path.exists():
