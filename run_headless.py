@@ -312,6 +312,22 @@ class RedisBackend:
                     break
             logger.info("Cleared Redis checkpoints for %s", ticker)
 
+    def enqueue_tickers(self, tickers: list[str]) -> int:
+        """LPUSH tickers to the Redis task queue. Returns count enqueued."""
+        if not tickers:
+            return 0
+        self.conn.lpush(REDIS_QUEUE_KEY, *tickers)
+        logger.info("Enqueued %d ticker(s) to %s", len(tickers), REDIS_QUEUE_KEY)
+        return len(tickers)
+
+    def consume_ticker(self, timeout: int = 5) -> str | None:
+        """BRPOP one ticker from the Redis task queue. Returns None on timeout."""
+        result = self.conn.brpop(REDIS_QUEUE_KEY, timeout=timeout)
+        if result is None:
+            return None
+        # brpop returns (queue_name, value)
+        return result[1]
+
 
 class HeadlessRunner:
     """Base headless runner — subclass and override hooks for customisation."""
@@ -376,6 +392,18 @@ class HeadlessRunner:
 
     def run(self) -> int:
         """Main entry point. Returns exit code (0/1/2)."""
+        # --enqueue: push tickers to Redis queue and exit
+        if self.args.enqueue:
+            if not self.tickers:
+                logger.error("No tickers to enqueue (use --ticker or --tickers)")
+                return 2
+            self.redis_backend.enqueue_tickers(self.tickers)
+            return 0
+
+        # --consume: pull tickers from Redis queue until empty
+        if self.args.consume:
+            return self._run_consume()
+
         if not self.tickers:
             logger.error("No tickers specified (use --ticker or --tickers)")
             return 2
@@ -413,6 +441,53 @@ class HeadlessRunner:
         if results:
             return 1
         return 2
+
+    def _run_consume(self) -> int:
+        """Consume tickers from Redis queue until empty, analyse each."""
+        ctx = self.pre_analysis()
+        results: list[dict[str, Any]] = []
+        failures = 0
+
+        logger.info("Consuming from Redis queue: %s", REDIS_QUEUE_KEY)
+        while True:
+            try:
+                self.spend.check()
+            except BudgetExceededError as exc:
+                logger.error("%s", exc)
+                break
+
+            ticker = self.redis_backend.consume_ticker(timeout=5)
+            if ticker is None:
+                logger.info("Queue empty, exiting")
+                break
+
+            ticker = ticker.upper()
+            logger.info("Consumed: %s", ticker)
+            try:
+                result = self._analyse_ticker(ticker, ctx)
+                result = self.post_analysis(ticker, result)
+                results.append(result)
+            except Exception:
+                logger.exception("Failed: %s", ticker)
+                failures += 1
+
+        logger.info("Done: %d succeeded, %d failed", len(results), failures)
+
+        if self.args.output_dir and results:
+            self._write_output_dir(results)
+
+        if results:
+            output = self.format_report(results)
+            if output:
+                print(output)
+
+        if failures == 0 and results:
+            return 0
+        if results:
+            return 1
+        if failures:
+            return 2
+        return 0  # queue was empty
 
     def _run_sequential(self, ctx: dict[str, Any]) -> tuple[list[dict[str, Any]], int]:
         """Run tickers one at a time."""
