@@ -109,9 +109,20 @@ class HeadlessRunner:
         return result
 
     def format_report(self, results: list[dict[str, Any]]) -> str:
-        """Format final output. Default: JSON array."""
+        """Format final output. JSON if --json, else human-readable summary."""
         import json
-        return json.dumps(results, indent=2, default=str)
+
+        if self.args.json_output:
+            return json.dumps(results, indent=2, default=str)
+
+        lines: list[str] = []
+        for r in results:
+            lines.append(f"{r['ticker']}  {r['decision']}  ({r['metadata'].get('elapsed_seconds', '?')}s)")
+            if r.get("thesis"):
+                # First line of thesis as summary
+                first = r["thesis"].split("\n", 1)[0][:120]
+                lines.append(f"  {first}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Core
