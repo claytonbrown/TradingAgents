@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date
@@ -107,6 +108,36 @@ def parse_config_overrides(pairs: list[str]) -> dict[str, Any]:
 DEPTH_TO_ROUNDS = {"shallow": 1, "medium": 3, "deep": 5}
 
 
+class BudgetExceededError(RuntimeError):
+    """Raised when --max-cost budget cap is reached."""
+
+
+class SpendTracker:
+    """Thread-safe in-memory USD spend tracker for --max-cost budget cap."""
+
+    def __init__(self, max_cost: float = 0) -> None:
+        self.max_cost = max_cost  # 0 = unlimited
+        self._total = 0.0
+        self._lock = threading.Lock()
+
+    @property
+    def total(self) -> float:
+        with self._lock:
+            return self._total
+
+    def check(self) -> None:
+        """Raise BudgetExceededError if budget is exhausted."""
+        if self.max_cost > 0 and self.total >= self.max_cost:
+            raise BudgetExceededError(f"Budget cap ${self.max_cost:.2f} reached (spent ${self._total:.2f})")
+
+    def add(self, amount: float) -> None:
+        """Record spend. Raises BudgetExceededError if cap exceeded after add."""
+        with self._lock:
+            self._total += amount
+        if self.max_cost > 0 and self._total > self.max_cost:
+            logger.warning("Budget cap exceeded: $%.2f / $%.2f", self._total, self.max_cost)
+
+
 class HeadlessRunner:
     """Base headless runner — subclass and override hooks for customisation."""
 
@@ -114,6 +145,7 @@ class HeadlessRunner:
         self.args = args
         self.tickers = parse_tickers(args)
         self.config_overrides = parse_config_overrides(args.config)
+        self.spend = SpendTracker(max_cost=args.max_cost)
         self._setup_logging()
 
     # ------------------------------------------------------------------
@@ -163,10 +195,14 @@ class HeadlessRunner:
         ctx = self.pre_analysis()
         workers = max(1, self.args.workers)
 
-        if workers > 1 and total > 1:
-            results, failures = self._run_parallel(ctx, workers)
-        else:
-            results, failures = self._run_sequential(ctx)
+        try:
+            if workers > 1 and total > 1:
+                results, failures = self._run_parallel(ctx, workers)
+            else:
+                results, failures = self._run_sequential(ctx)
+        except BudgetExceededError as exc:
+            logger.error("%s", exc)
+            return 2
 
         logger.info("Done: %d succeeded, %d failed", len(results), failures)
 
@@ -190,6 +226,7 @@ class HeadlessRunner:
         failures = 0
         total = len(self.tickers)
         for i, ticker in enumerate(self.tickers, 1):
+            self.spend.check()
             logger.info("[%d/%d] %s", i, total, ticker)
             try:
                 result = self._analyse_ticker(ticker, ctx)
