@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import argparse
+import json as _json
 import logging
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -138,6 +139,27 @@ class SpendTracker:
             logger.warning("Budget cap exceeded: $%.2f / $%.2f", self._total, self.max_cost)
 
 
+class CostLogger:
+    """Thread-safe append-only JSONL cost logger."""
+
+    def __init__(self, path: Path = Path("cost_log.jsonl")) -> None:
+        self._path = path
+        self._lock = threading.Lock()
+
+    def log(self, ticker: str, cost_usd: float, **extra: Any) -> None:
+        """Append a cost entry as a single JSON line."""
+        entry = {
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "ticker": ticker,
+            "cost_usd": cost_usd,
+            **extra,
+        }
+        line = _json.dumps(entry, default=str) + "\n"
+        with self._lock:
+            with self._path.open("a") as f:
+                f.write(line)
+
+
 class HeadlessRunner:
     """Base headless runner — subclass and override hooks for customisation."""
 
@@ -146,6 +168,9 @@ class HeadlessRunner:
         self.tickers = parse_tickers(args)
         self.config_overrides = parse_config_overrides(args.config)
         self.spend = SpendTracker(max_cost=args.max_cost)
+        self.cost_logger = CostLogger(
+            args.output_dir / "cost_log.jsonl" if args.output_dir else Path("cost_log.jsonl")
+        )
         self._setup_logging()
 
     # ------------------------------------------------------------------
@@ -288,6 +313,12 @@ class HeadlessRunner:
         final_state, decision = ta.propagate(ticker, self.args.date)
 
         elapsed = time.time() - t0
+
+        # Log cost per ticker (estimate from token usage if available)
+        cost_usd = final_state.get("cost_usd", 0.0)
+        if cost_usd:
+            self.spend.add(cost_usd)
+            self.cost_logger.log(ticker, cost_usd, elapsed_seconds=round(elapsed, 1))
 
         return {
             "ticker": ticker,
