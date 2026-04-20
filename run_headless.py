@@ -67,6 +67,8 @@ def parse_tickers(args: argparse.Namespace) -> list[str]:
     if raw.startswith("@"):
         path = Path(raw[1:])
         raw = path.read_text().strip()
+    # Support both comma-separated and newline-separated tickers
+    raw = raw.replace("\n", ",")
     return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
 
@@ -121,11 +123,15 @@ class HeadlessRunner:
             logger.error("No tickers specified (use --ticker or --tickers)")
             return 2
 
+        total = len(self.tickers)
+        logger.info("Batch: %d ticker(s) — %s", total, ", ".join(self.tickers))
+
         ctx = self.pre_analysis()
         results: list[dict[str, Any]] = []
         failures = 0
 
-        for ticker in self.tickers:
+        for i, ticker in enumerate(self.tickers, 1):
+            logger.info("[%d/%d] %s", i, total, ticker)
             try:
                 result = self._analyse_ticker(ticker, ctx)
                 result = self.post_analysis(ticker, result)
@@ -133,6 +139,8 @@ class HeadlessRunner:
             except Exception:
                 logger.exception("Failed: %s", ticker)
                 failures += 1
+
+        logger.info("Done: %d succeeded, %d failed", len(results), failures)
 
         # Output
         if results:
