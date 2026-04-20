@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import time
 from datetime import date
 from pathlib import Path
 from typing import Any
@@ -147,8 +148,40 @@ class HeadlessRunner:
         return 2
 
     def _analyse_ticker(self, ticker: str, ctx: dict[str, Any]) -> dict[str, Any]:
-        """Run analysis for a single ticker. Placeholder — implemented in task 2."""
-        raise NotImplementedError("Single-ticker analysis not yet implemented (task 2)")
+        """Run analysis for a single ticker via TradingAgentsGraph.propagate()."""
+        from tradingagents.default_config import DEFAULT_CONFIG
+        from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+        config = DEFAULT_CONFIG.copy()
+        config["max_debate_rounds"] = DEPTH_TO_ROUNDS[self.args.depth]
+        config.update(self.config_overrides)
+
+        logger.info("Analysing %s (date=%s, depth=%s)", ticker, self.args.date, self.args.depth)
+        t0 = time.time()
+
+        ta = TradingAgentsGraph(debug=self.args.verbose, config=config)
+        final_state, decision = ta.propagate(ticker, self.args.date)
+
+        elapsed = time.time() - t0
+
+        return {
+            "ticker": ticker,
+            "date": self.args.date,
+            "decision": decision.strip().upper(),
+            "confidence": "",
+            "thesis": final_state.get("final_trade_decision", ""),
+            "reports": {
+                "market": final_state.get("market_report", ""),
+                "sentiment": final_state.get("sentiment_report", ""),
+                "news": final_state.get("news_report", ""),
+                "fundamentals": final_state.get("fundamentals_report", ""),
+            },
+            "metadata": {
+                "model": config.get("deep_think_llm", ""),
+                "debate_rounds": config["max_debate_rounds"],
+                "elapsed_seconds": round(elapsed, 1),
+            },
+        }
 
     # ------------------------------------------------------------------
     # Internal
