@@ -559,6 +559,11 @@ class HeadlessRunner:
 
     def _analyse_ticker(self, ticker: str, ctx: dict[str, Any]) -> dict[str, Any]:
         """Run analysis for a single ticker via TradingAgentsGraph.propagate()."""
+        # Reuse check: skip if price moved less than threshold since last run
+        reused = self._check_reuse(ticker)
+        if reused is not None:
+            return reused
+
         # Acquire distributed lock in cluster mode to prevent duplicate work
         locked = False
         if self.redis_backend:
@@ -613,11 +618,14 @@ class HeadlessRunner:
             self.cost_logger.log(ticker, cost_usd, elapsed_seconds=round(elapsed, 1),
                                  tokens_in=tokens_in, tokens_out=tokens_out)
 
+        current_price = self._fetch_price(ticker)
+
         return {
             "ticker": ticker,
             "date": self.args.date,
             "decision": decision.strip().upper(),
             "confidence": "",
+            "current_price": current_price,
             "thesis": final_state.get("final_trade_decision", ""),
             "reports": {
                 "market": final_state.get("market_report", ""),
@@ -678,6 +686,52 @@ class HeadlessRunner:
             (out / f"{ticker}.md").write_text(md)
 
         logger.info("Wrote %d result(s) to %s", len(results), out)
+
+    def _fetch_price(self, ticker: str) -> float | None:
+        """Fetch latest closing price via yfinance. Returns None on failure."""
+        try:
+            import yfinance as yf
+            t = yf.Ticker(ticker)
+            hist = t.history(period="1d")
+            if hist.empty:
+                return None
+            return float(hist["Close"].iloc[-1])
+        except Exception:
+            logger.debug("Could not fetch price for %s", ticker)
+            return None
+
+    def _check_reuse(self, ticker: str) -> dict[str, Any] | None:
+        """Return previous result if price moved less than --reuse-threshold %. Else None."""
+        threshold = self.args.reuse_threshold
+        if threshold <= 0 or not self.args.output_dir:
+            return None
+
+        prev_path = self.args.output_dir / f"{ticker}.json"
+        if not prev_path.exists():
+            return None
+
+        try:
+            prev = _json.loads(prev_path.read_text())
+        except Exception:
+            return None
+
+        prev_price = prev.get("current_price")
+        if not prev_price:
+            return None
+
+        current_price = self._fetch_price(ticker)
+        if current_price is None:
+            return None
+
+        pct_change = abs(current_price - prev_price) / prev_price * 100
+        if pct_change >= threshold:
+            logger.info("%s price moved %.2f%% (>= %.2f%%), re-analysing", ticker, pct_change, threshold)
+            return None
+
+        logger.info("%s price moved %.2f%% (< %.2f%%), reusing previous result", ticker, pct_change, threshold)
+        prev["metadata"]["reused"] = True
+        prev["current_price"] = current_price
+        return prev
 
     def _setup_logging(self) -> None:
         level = logging.WARNING if self.args.quiet else (logging.DEBUG if self.args.verbose else logging.INFO)
