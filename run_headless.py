@@ -72,15 +72,34 @@ def parse_tickers(args: argparse.Namespace) -> list[str]:
     return [t.strip().upper() for t in raw.split(",") if t.strip()]
 
 
-def parse_config_overrides(pairs: list[str]) -> dict[str, str]:
-    """Parse --config KEY=VALUE pairs into a dict."""
-    overrides: dict[str, str] = {}
+def _coerce_value(v: str) -> Any:
+    """Best-effort coerce string to int/float/bool/None, else keep as str."""
+    if v.lower() in ("true", "yes"):
+        return True
+    if v.lower() in ("false", "no"):
+        return False
+    if v.lower() in ("none", "null", ""):
+        return None
+    try:
+        return int(v)
+    except ValueError:
+        pass
+    try:
+        return float(v)
+    except ValueError:
+        pass
+    return v
+
+
+def parse_config_overrides(pairs: list[str]) -> dict[str, Any]:
+    """Parse --config KEY=VALUE pairs into a dict with type coercion."""
+    overrides: dict[str, Any] = {}
     for pair in pairs:
         if "=" not in pair:
             logger.warning("Ignoring malformed --config %r (expected KEY=VALUE)", pair)
             continue
         k, v = pair.split("=", 1)
-        overrides[k.strip()] = v.strip()
+        overrides[k.strip()] = _coerce_value(v.strip())
     return overrides
 
 
