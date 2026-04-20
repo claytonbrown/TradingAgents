@@ -153,6 +153,10 @@ class HeadlessRunner:
 
         logger.info("Done: %d succeeded, %d failed", len(results), failures)
 
+        # Write per-ticker files if --output-dir
+        if self.args.output_dir and results:
+            self._write_output_dir(results)
+
         # Output
         if results:
             output = self.format_report(results)
@@ -205,6 +209,26 @@ class HeadlessRunner:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
+
+    def _write_output_dir(self, results: list[dict[str, Any]]) -> None:
+        """Write per-ticker JSON and markdown decision files to --output-dir."""
+        import json
+
+        out = self.args.output_dir
+        out.mkdir(parents=True, exist_ok=True)
+
+        for r in results:
+            ticker = r["ticker"]
+            # JSON
+            (out / f"{ticker}.json").write_text(json.dumps(r, indent=2, default=str))
+            # Markdown
+            md = f"# {ticker} — {r['decision']}\n\n"
+            md += f"Date: {r['date']}\n\n"
+            if r.get("thesis"):
+                md += f"## Decision\n\n{r['thesis']}\n"
+            (out / f"{ticker}.md").write_text(md)
+
+        logger.info("Wrote %d result(s) to %s", len(results), out)
 
     def _setup_logging(self) -> None:
         level = logging.WARNING if self.args.quiet else (logging.DEBUG if self.args.verbose else logging.INFO)
