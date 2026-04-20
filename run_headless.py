@@ -224,6 +224,50 @@ class RedisCostLogger:
             self._fallback.log(ticker, cost_usd, **extra)
 
 
+class InMemoryCache:
+    """Thread-safe in-memory cache for single-node mode (per-run only)."""
+
+    def __init__(self) -> None:
+        self._store: dict[str, str] = {}
+        self._lock = threading.Lock()
+
+    def get(self, key: str) -> str | None:
+        with self._lock:
+            return self._store.get(key)
+
+    def set(self, key: str, value: str, ttl: int = 3600) -> None:
+        """Store value. TTL is ignored for in-memory (cache lives per-run)."""
+        with self._lock:
+            self._store[key] = value
+
+
+class RedisCache:
+    """Redis-backed cache using GET/SETEX with TTL and graceful fallback."""
+
+    KEY_PREFIX = "tradingagents:cache:"
+
+    def __init__(self, rconn: Any, fallback: InMemoryCache | None = None) -> None:
+        self._r = rconn
+        self._fallback = fallback or InMemoryCache()
+
+    def get(self, key: str) -> str | None:
+        rkey = self.KEY_PREFIX + key
+        try:
+            return self._r.get(rkey)
+        except Exception:
+            logger.debug("Redis GET failed for %s, falling back to memory", key)
+            return self._fallback.get(key)
+
+    def set(self, key: str, value: str, ttl: int = 3600) -> None:
+        rkey = self.KEY_PREFIX + key
+        try:
+            self._r.setex(rkey, ttl, value)
+        except Exception:
+            logger.debug("Redis SETEX failed for %s, falling back to memory", key)
+        # Always populate fallback so reads degrade gracefully
+        self._fallback.set(key, value, ttl)
+
+
 class RedisBackend:
     """Holds the Redis connection and provides factory methods for Redis-backed components."""
 
@@ -239,6 +283,9 @@ class RedisBackend:
 
     def make_cost_logger(self, fallback_path: Path) -> RedisCostLogger:
         return RedisCostLogger(self.conn, fallback_path=fallback_path)
+
+    def make_cache(self) -> RedisCache:
+        return RedisCache(self.conn)
 
     def make_checkpointer(self, ticker: str) -> Any:
         """Create a Redis-backed checkpointer (task 14)."""
@@ -268,10 +315,12 @@ class HeadlessRunner:
             self.redis_backend = RedisBackend(args.redis)
             self.spend = self.redis_backend.make_spend_tracker(max_cost=args.max_cost)
             self.cost_logger = self.redis_backend.make_cost_logger(fallback_path=cost_log_path)
+            self.cache: InMemoryCache | RedisCache = self.redis_backend.make_cache()
             logger.info("Cluster mode: all shared state via Redis")
         else:
             self.spend = SpendTracker(max_cost=args.max_cost)
             self.cost_logger = CostLogger(cost_log_path)
+            self.cache = InMemoryCache()
             logger.info("Single-node mode: threads + SQLite")
 
     # ------------------------------------------------------------------
