@@ -585,10 +585,12 @@ class HeadlessRunner:
 
         checkpointer = self._make_checkpointer(ticker) if self.args.checkpoint else None
 
+        callbacks = [_StepTracer(ticker)] if self.args.verbose else []
+
         logger.info("Analysing %s (date=%s, depth=%s)", ticker, self.args.date, self.args.depth)
         t0 = time.time()
 
-        ta = TradingAgentsGraph(debug=self.args.verbose, config=config, checkpointer=checkpointer)
+        ta = TradingAgentsGraph(debug=self.args.verbose, config=config, checkpointer=checkpointer, callbacks=callbacks)
         final_state, decision = ta.propagate(ticker, self.args.date)
 
         elapsed = time.time() - t0
@@ -684,6 +686,51 @@ class HeadlessRunner:
         root = logging.getLogger("headless")
         root.setLevel(level)
         root.addHandler(handler)
+
+
+class _StepTracer:
+    """LangChain callback handler that logs LLM/chain/tool steps to stderr for --verbose tracing."""
+
+    def __init__(self, ticker: str) -> None:
+        self.ticker = ticker
+
+    def on_llm_start(self, serialized: dict[str, Any], prompts: list[str], **kwargs: Any) -> None:
+        name = serialized.get("id", ["unknown"])[-1]
+        logger.debug("[TRACE %s] LLM start: %s (%d prompt(s))", self.ticker, name, len(prompts))
+
+    def on_llm_end(self, response: Any, **kwargs: Any) -> None:
+        # Extract token usage if available
+        usage = {}
+        if hasattr(response, "llm_output") and response.llm_output:
+            usage = response.llm_output.get("token_usage", {})
+        parts = [f"LLM end"]
+        if usage:
+            parts.append(f"tokens={usage.get('prompt_tokens', '?')}in/{usage.get('completion_tokens', '?')}out")
+        logger.debug("[TRACE %s] %s", self.ticker, " | ".join(parts))
+
+    def on_chain_start(self, serialized: dict[str, Any], inputs: dict[str, Any], **kwargs: Any) -> None:
+        name = serialized.get("id", ["unknown"])[-1]
+        logger.debug("[TRACE %s] Chain start: %s", self.ticker, name)
+
+    def on_chain_end(self, outputs: dict[str, Any], **kwargs: Any) -> None:
+        logger.debug("[TRACE %s] Chain end", self.ticker)
+
+    def on_tool_start(self, serialized: dict[str, Any], input_str: str, **kwargs: Any) -> None:
+        name = serialized.get("name", "unknown")
+        logger.debug("[TRACE %s] Tool start: %s", self.ticker, name)
+
+    def on_tool_end(self, output: str, **kwargs: Any) -> None:
+        preview = str(output)[:120]
+        logger.debug("[TRACE %s] Tool end: %s", self.ticker, preview)
+
+    def on_llm_error(self, error: BaseException, **kwargs: Any) -> None:
+        logger.warning("[TRACE %s] LLM error: %s", self.ticker, error)
+
+    def on_chain_error(self, error: BaseException, **kwargs: Any) -> None:
+        logger.warning("[TRACE %s] Chain error: %s", self.ticker, error)
+
+    def on_tool_error(self, error: BaseException, **kwargs: Any) -> None:
+        logger.warning("[TRACE %s] Tool error: %s", self.ticker, error)
 
 
 class _WorkerFormatter(logging.Formatter):
