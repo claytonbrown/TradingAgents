@@ -132,6 +132,53 @@ For local models with Ollama:
 docker compose --profile ollama run --rm tradingagents-ollama
 ```
 
+### Redis Cache (Optional)
+
+TradingAgents includes an optional Redis cache that stores API responses to reduce external calls, save quota, and speed up repeated analyses. When Redis is unavailable the system runs identically to an uncached setup — no configuration required.
+
+Install with cache support:
+```bash
+pip install ".[cache]"
+```
+
+Enable via environment variable or config:
+```bash
+export TRADINGAGENTS_CACHE_URL=redis://localhost:6379/0
+```
+
+Or in Python:
+```python
+config = DEFAULT_CONFIG.copy()
+config["cache_url"] = "redis://localhost:6379/0"
+```
+
+**Default TTLs by namespace:**
+
+| Namespace | TTL | Cached data |
+|-----------|-----|-------------|
+| `market` | 1 hour | Price, target, consensus data |
+| `analysis` | 24 hours | Per-ticker LLM analysis results |
+| `news` | 4 hours | News API responses |
+| `fundamentals` | 12 hours | Financial statements, ratios |
+| `indicators` | 4 hours | Technical indicator computations |
+
+**Docker Compose** already includes a Redis service. Just run:
+```bash
+docker compose run --rm tradingagents
+```
+
+To run Redis standalone for local development:
+```bash
+docker run -d --name redis -p 6379:6379 redis:7-alpine
+export TRADINGAGENTS_CACHE_URL=redis://localhost:6379/0
+```
+
+**CLI flags** (headless mode):
+```bash
+tradingagents --cache                          # enable with default redis://localhost:6379/0
+tradingagents --cache-url redis://myhost:6379  # custom URL
+```
+
 ### Required APIs
 
 TradingAgents supports multiple LLM providers. Set the API key for your chosen provider:
