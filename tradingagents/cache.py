@@ -32,12 +32,20 @@ DEFAULT_TTLS: dict[str, int] = {
     "indicators": 14400,
 }
 
+# Tier hierarchy (lowest → highest). Each tier writes to itself and all higher tiers.
+TIERS: list[str] = ["bronze", "silver", "gold", "platinum"]
+
+# Platinum always skips cache reads (TTL=0).
+TIER_TTL_ZERO = "platinum"
+
 
 def _find_recent_analysis(
     ticker: str,
     date: str,
     ttl_seconds: int,
     analyses_dir: str | Path,
+    *,
+    tier: str | None = None,
 ) -> dict[str, Any] | None:
     """Scan ``analyses_dir/{TICKER}_*/summary.json`` and return the most recent within *ttl_seconds* of *date*.
 
@@ -46,6 +54,8 @@ def _find_recent_analysis(
         date: Reference date as ``YYYY-MM-DD``.
         ttl_seconds: Maximum age in seconds for a cached analysis to be valid.
         analyses_dir: Root directory containing ``{TICKER}_{date}[_{tier}]/summary.json`` folders.
+        tier: If set, only match directories ending with ``_{tier}``.
+              Directories without a tier suffix are treated as tier-less (legacy).
 
     Returns:
         Parsed summary dict from the most recent valid ``summary.json``, or ``None``.
@@ -62,8 +72,16 @@ def _find_recent_analysis(
         parts = dir_name.split("_", 1)
         if len(parts) < 2:
             continue
-        # Extract date portion (second segment, may have trailing _tier)
-        date_str = parts[1][:10]
+        remainder = parts[1]  # e.g. "2026-04-14" or "2026-04-14_bronze"
+        date_str = remainder[:10]
+
+        # Determine directory tier suffix (if any)
+        dir_tier = remainder[11:] if len(remainder) > 10 and remainder[10] == "_" else None
+
+        # Filter by tier when requested
+        if tier is not None and dir_tier != tier:
+            continue
+
         try:
             analysis_date = datetime.strptime(date_str, "%Y-%m-%d")
         except ValueError:
@@ -186,6 +204,25 @@ class AnalysisCache:
             return True
         except Exception:
             return False
+
+    def set_tiered(self, base_key: str, data: Any, tier: str,
+                   namespace: str = "analysis", ttl: int | None = None,
+                   *, price: float | None = None) -> bool:
+        """Write *data* to the current tier key and all higher-tier keys.
+
+        Tier hierarchy (low → high): bronze, silver, gold, platinum.
+        Bronze writes ``:bronze``, ``:silver``, ``:gold``, ``:platinum``.
+        Platinum writes ``:platinum`` only.
+        """
+        if tier not in TIERS:
+            return self.set(base_key, data, namespace, ttl, price=price)
+        idx = TIERS.index(tier)
+        target_tiers = TIERS[idx:]
+        ok = False
+        for t in target_tiers:
+            if self.set(f"{base_key}:{t}", data, namespace, ttl, price=price):
+                ok = True
+        return ok
 
     # ------------------------------------------------------------------
     # Staleness logging

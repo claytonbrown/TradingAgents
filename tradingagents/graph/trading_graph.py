@@ -222,26 +222,37 @@ class TradingAgentsGraph:
     def _check_analysis_cache(self, ticker: str, trade_date: str) -> Dict[str, Any] | None:
         """Check Redis (exact date) then filesystem TTL scan for a reusable analysis.
 
+        Tier-aware: each tier reads only its own key. Platinum (TTL=0) always
+        skips cache reads.
+
         Returns the cached summary dict or None.
         """
+        from tradingagents.cache import TIER_TTL_ZERO
+
+        tier = self.config.get("cache_tier")
+        # Platinum always skips cache reads
+        if tier == TIER_TTL_ZERO:
+            logger.info("[ANALYSIS CACHE] %s %s: platinum tier — skipping cache read", ticker, trade_date)
+            return None
+
         analysis_ttl = self.config.get("cache_ttl_overrides", {}).get(
             "analysis", self.config.get("cache_ttl_seconds", 86400)
         )
 
-        # 1. Redis exact-date check
+        # 1. Redis exact-date check (tier-suffixed key when tier is set)
         cache = self._get_analysis_cache()
         if cache:
-            redis_key = f"{ticker}:{trade_date}"
+            redis_key = f"{ticker}:{trade_date}:{tier}" if tier else f"{ticker}:{trade_date}"
             hit = cache.get(redis_key, namespace="analysis", ticker=ticker)
             if hit is not None:
-                logger.info("[ANALYSIS CACHE] %s %s: Redis exact-date hit", ticker, trade_date)
+                logger.info("[ANALYSIS CACHE] %s %s: Redis exact-date hit (tier=%s)", ticker, trade_date, tier or "none")
                 return hit
 
-        # 2. Filesystem TTL scan
+        # 2. Filesystem TTL scan (filtered by tier when set)
         from tradingagents.cache import _find_recent_analysis
-        summary = _find_recent_analysis(ticker, trade_date, analysis_ttl, self._analyses_dir)
+        summary = _find_recent_analysis(ticker, trade_date, analysis_ttl, self._analyses_dir, tier=tier)
         if summary is not None:
-            logger.info("[ANALYSIS CACHE] %s %s: filesystem TTL scan hit", ticker, trade_date)
+            logger.info("[ANALYSIS CACHE] %s %s: filesystem TTL scan hit (tier=%s)", ticker, trade_date, tier or "none")
         return summary
 
     def _price_delta_pct(self, cached_summary: Dict[str, Any], ticker: str) -> float | None:
@@ -273,7 +284,14 @@ class TradingAgentsGraph:
             return False
 
     def _save_analysis_summary(self, ticker: str, trade_date: str, final_state: Dict[str, Any]) -> None:
-        """Write summary.json for future TTL scans and cache in Redis."""
+        """Write summary.json for future TTL scans and cache in Redis.
+
+        Tier-aware: filesystem path includes ``_{tier}`` suffix when a tier is
+        configured.  Redis uses ``set_tiered`` to populate the current tier key
+        and all higher-tier keys.
+        """
+        tier = self.config.get("cache_tier")
+
         summary = {
             "company_of_interest": ticker,
             "trade_date": trade_date,
@@ -281,20 +299,27 @@ class TradingAgentsGraph:
             "investment_plan": final_state.get("investment_plan", ""),
             "_cached_at": time.time(),
         }
+        if tier:
+            summary["_cache_tier"] = tier
         # Add current price for future delta checks
         price = self._get_current_price(ticker)
         if price is not None:
             summary["_cached_price"] = price
 
-        # Filesystem
-        out_dir = self._analyses_dir / f"{ticker}_{trade_date}"
+        # Filesystem — include tier suffix when configured
+        dir_name = f"{ticker}_{trade_date}_{tier}" if tier else f"{ticker}_{trade_date}"
+        out_dir = self._analyses_dir / dir_name
         out_dir.mkdir(parents=True, exist_ok=True)
         (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
 
-        # Redis
+        # Redis — tiered write populates current + higher tier keys
         cache = self._get_analysis_cache()
         if cache:
-            cache.set(f"{ticker}:{trade_date}", summary, namespace="analysis", price=price)
+            base_key = f"{ticker}:{trade_date}"
+            if tier:
+                cache.set_tiered(base_key, summary, tier, namespace="analysis", price=price)
+            else:
+                cache.set(base_key, summary, namespace="analysis", price=price)
 
     # ------------------------------------------------------------------
 
