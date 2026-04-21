@@ -218,3 +218,8 @@ __marimo__/
 # Cache
 **/data_cache/
 data/
+
+# Fork-specific (excluded from contrib branches)
+.kiro/
+progress.txt
+ralph-kiro.sh
