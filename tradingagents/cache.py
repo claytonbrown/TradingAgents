@@ -33,8 +33,18 @@ DEFAULT_TTLS: dict[str, int] = {
 class AnalysisCache:
     """Redis-backed cache with namespace isolation and graceful fallback."""
 
-    def __init__(self, url: str = "redis://localhost:6379/0", ttls: dict[str, int] | None = None):
-        self._ttls = {**DEFAULT_TTLS, **(ttls or {})}
+    def __init__(self, url: str = "redis://localhost:6379/0", ttls: dict[str, int] | None = None, config: dict | None = None):
+        # Start with hardcoded defaults
+        base_ttls = dict(DEFAULT_TTLS)
+        # If platform config provided, apply its default TTL and per-namespace overrides
+        if config:
+            default_ttl = config.get("cache_ttl_seconds")
+            if default_ttl is not None:
+                base_ttls = {ns: default_ttl for ns in base_ttls}
+            base_ttls.update(config.get("cache_ttl_overrides", {}))
+        # Explicit ttls parameter takes highest precedence
+        base_ttls.update(ttls or {})
+        self._ttls = base_ttls
         self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"hits": 0, "misses": 0})
         self._redis = None
         try:

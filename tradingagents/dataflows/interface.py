@@ -143,7 +143,7 @@ def _get_cache():
         return None
     try:
         from tradingagents.cache import AnalysisCache
-        _cache_instance = AnalysisCache(url=url)
+        _cache_instance = AnalysisCache(url=url, config=get_config())
     except Exception:
         _cache_instance = object()  # sentinel so we don't retry
         return None

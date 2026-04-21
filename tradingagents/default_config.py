@@ -37,6 +37,16 @@ DEFAULT_CONFIG = {
     "max_recur_limit": 100,
     # Redis cache (optional). Set URL to enable, empty string to disable.
     "cache_url": os.getenv("TRADINGAGENTS_CACHE_URL", ""),
+    # Default TTL for all cached entries (seconds). 86400 = 1 day.
+    "cache_ttl_seconds": 86400,
+    # Per-namespace TTL overrides (seconds). Namespaces not listed use cache_ttl_seconds.
+    "cache_ttl_overrides": {
+        "market_data": 3600,
+        "analysis": 604800,
+        "news": 43200,
+        "fundamentals": 43200,
+        "indicators": 14400,
+    },
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
