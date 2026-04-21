@@ -119,6 +119,11 @@ Install the package and its dependencies:
 pip install .
 ```
 
+For AWS Bedrock support, install with the optional dependency:
+```bash
+pip install ".[bedrock]"
+```
+
 ### Docker
 
 Alternatively, run with Docker:
@@ -208,7 +213,7 @@ from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.default_config import DEFAULT_CONFIG
 
 config = DEFAULT_CONFIG.copy()
-config["llm_provider"] = "openai"        # openai, google, anthropic, xai, deepseek, qwen, glm, openrouter, ollama, azure
+config["llm_provider"] = "openai"        # openai, google, anthropic, xai, deepseek, qwen, glm, openrouter, ollama, azure, bedrock
 config["deep_think_llm"] = "gpt-5.4"     # Model for complex reasoning
 config["quick_think_llm"] = "gpt-5.4-mini" # Model for quick tasks
 config["max_debate_rounds"] = 2
@@ -217,6 +222,17 @@ ta = TradingAgentsGraph(debug=True, config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 print(decision)
 ```
+
+For AWS Bedrock, use model aliases (`claude-haiku`, `claude-sonnet`, `claude-opus`) which map to Bedrock inference profile ARNs:
+
+```python
+config = DEFAULT_CONFIG.copy()
+config["llm_provider"] = "bedrock"
+config["deep_think_llm"] = "claude-sonnet"   # Maps to Bedrock inference profile
+config["quick_think_llm"] = "claude-haiku"
+```
+
+Bedrock uses the standard boto3 credential chain (environment variables, `~/.aws/credentials`, IAM role). See `.env.enterprise.example` for configuration options.
 
 See `tradingagents/default_config.py` for all configuration options.
 
