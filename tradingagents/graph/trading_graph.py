@@ -325,6 +325,36 @@ class TradingAgentsGraph:
             else:
                 cache.set(base_key, summary, namespace="analysis", price=price)
 
+    def _save_reuse_summary(
+        self, ticker: str, trade_date: str, cached: Dict[str, Any], delta_pct: float | None,
+    ) -> None:
+        """Write summary.json with reuse metadata when a cached analysis is reused."""
+        tier = self.config.get("cache_tier")
+        cached_date = cached.get("trade_date", "")
+        cached_at = cached.get("_cached_at")
+        age_days = (time.time() - cached_at) / 86400 if cached_at else None
+
+        reason = "price_delta_below_threshold" if delta_pct is not None else "no_price_data"
+
+        summary = dict(cached)
+        summary.update({
+            "_reused": True,
+            "_reused_from": cached_date,
+            "_reuse_reason": reason,
+            "_reuse_age_days": round(age_days, 2) if age_days is not None else None,
+            "_reuse_price_delta_pct": round(delta_pct, 2) if delta_pct is not None else None,
+            "_tenant_tier": tier,
+            "_cache_tier": cached.get("_cache_tier", tier),
+        })
+        # Overwrite trade_date to the current run date
+        summary["trade_date"] = trade_date
+
+        dir_name = f"{ticker}_{trade_date}_{tier}" if tier else f"{ticker}_{trade_date}"
+        out_dir = self._analyses_dir / dir_name
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+        logger.info("[REUSE] %s %s: wrote summary with reuse metadata (from=%s)", ticker, trade_date, cached_date)
+
     # ------------------------------------------------------------------
 
     def _fetch_returns(
@@ -428,6 +458,8 @@ class TradingAgentsGraph:
                 logger.info("%s: no price delta available, reusing cached analysis", company_name)
 
             if skip:
+                # Record reuse metadata
+                self._save_reuse_summary(company_name, str(trade_date), cached, delta)
                 decision = cached.get("final_trade_decision", "")
                 final_state = self.propagator.create_initial_state(company_name, str(trade_date))
                 final_state["final_trade_decision"] = decision
