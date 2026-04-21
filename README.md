@@ -248,6 +248,158 @@ ta = TradingAgentsGraph(config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 ```
 
+## Headless Runner
+
+`run_headless.py` provides a CLI for batch analysis — designed for cron jobs, CI pipelines, and horizontal scaling. No TUI required.
+
+### Quick Start
+
+```bash
+# Single ticker
+tradingagents-headless --ticker NVDA --json
+
+# Batch with output directory
+tradingagents-headless --tickers NVDA,AAPL,MSFT --output-dir ./results --depth deep
+
+# From a file (one ticker per line)
+tradingagents-headless --tickers @watchlist.txt --json --quiet
+```
+
+### CLI Flags
+
+| Flag | Description |
+|------|-------------|
+| `--ticker NVDA` | Single ticker |
+| `--tickers NVDA,AAPL` | Comma-separated or `@file.txt` |
+| `--date 2026-04-21` | Analysis date (default: today) |
+| `--depth shallow\|medium\|deep` | Debate rounds: 1/3/5 |
+| `--output-dir ./results` | Write per-ticker JSON + markdown |
+| `--json` | Structured JSON to stdout |
+| `--quiet` | Suppress progress logs |
+| `--config key=value` | Override config (repeatable) |
+| `--workers N` | Concurrency level |
+| `--checkpoint` | Enable crash recovery |
+| `--max-cost N` | USD budget cap |
+| `--model-tier auto\|deep\|standard\|light` | Force model selection |
+| `--verbose` | Full LangGraph step tracing |
+
+### Exit Codes
+
+- `0` — all tickers succeeded
+- `1` — partial failure
+- `2` — total failure or budget exceeded
+
+### Single-Node Mode (threads + SQLite)
+
+Default mode. No external dependencies beyond the LLM API.
+
+```bash
+# 3 workers, checkpoint for crash recovery, $5 budget cap
+tradingagents-headless \
+  --tickers NVDA,AAPL,MSFT,META,GOOG \
+  --workers 3 \
+  --checkpoint \
+  --max-cost 5 \
+  --output-dir ./results
+```
+
+### Cluster Mode (Redis)
+
+All shared state moves to Redis for multi-node coordination.
+
+```bash
+pip install tradingagents[distributed]
+
+# Producer: enqueue tickers
+tradingagents-headless \
+  --tickers NVDA,AAPL,MSFT,META,GOOG \
+  --redis redis://host:6379 \
+  --enqueue
+
+# Workers (run on N nodes):
+tradingagents-headless \
+  --redis redis://host:6379 \
+  --consume \
+  --workers 1 \
+  --max-cost 10 \
+  --output-dir ./results
+```
+
+### Docker
+
+```bash
+# Single ticker
+docker compose run --rm headless --ticker NVDA --json
+
+# Cluster mode with Redis
+docker compose --profile cluster up -d redis
+docker compose --profile cluster run --rm headless-worker
+```
+
+Build the image directly:
+
+```bash
+docker build -t tradingagents-headless .
+docker run --env-file .env tradingagents-headless --ticker NVDA --json
+```
+
+### CI/CD (GitHub Actions)
+
+```yaml
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install .
+      - run: |
+          tradingagents-headless \
+            --tickers NVDA,AAPL,MSFT \
+            --json \
+            --depth shallow \
+            --max-cost 2 \
+            --output-dir ./results
+      - uses: actions/upload-artifact@v4
+        with:
+          name: analysis-results
+          path: ./results/
+```
+
+### Cron Example
+
+```bash
+# Daily analysis at 6am ET
+0 6 * * 1-5 tradingagents-headless \
+  --tickers @~/watchlist.txt \
+  --output-dir ~/results/$(date +\%Y-\%m-\%d) \
+  --depth medium \
+  --reuse-threshold 2 \
+  --quiet 2>>~/logs/headless.log
+```
+
+### Extending (Subclassing)
+
+```python
+from run_headless import HeadlessRunner, main
+
+class MyRunner(HeadlessRunner):
+    def pre_analysis(self):
+        # Custom setup (load portfolio, etc.)
+        return {"portfolio": load_my_portfolio()}
+
+    def post_analysis(self, ticker, result):
+        # Enrich with custom signals
+        result["my_score"] = compute_score(ticker)
+        return result
+
+    def format_report(self, results):
+        # Custom output format
+        return my_formatter(results)
+```
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
