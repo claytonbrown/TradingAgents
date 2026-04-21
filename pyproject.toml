@@ -51,6 +51,7 @@ markers = [
     "unit: fast isolated unit tests",
     "integration: tests requiring external services",
     "smoke: quick sanity-check tests",
+    "redis: requires a running Redis instance (deselect with '-m \"not redis\"')",
 ]
 filterwarnings = [
     "ignore::DeprecationWarning",
