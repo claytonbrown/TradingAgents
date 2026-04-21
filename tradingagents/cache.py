@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -68,8 +70,14 @@ class AnalysisCache:
         """Record a cache skip (lookup bypassed because cache is unavailable or disabled)."""
         self._stats[namespace]["skips"] += 1
 
-    def get(self, key: str, namespace: str = "market") -> Any | None:
-        """Return cached value or None (cache miss / unavailable)."""
+    def get(self, key: str, namespace: str = "market", *, source: str = "redis",
+            ticker: str | None = None, price_now: float | None = None) -> Any | None:
+        """Return cached value or None (cache miss / unavailable).
+
+        When a hit occurs, logs staleness metadata including age, source, and
+        optional price delta.  Emits a warning when the entry is older than 50%
+        of the namespace TTL.
+        """
         if not self.available:
             self._stats[namespace]["skips"] += 1
             return None
@@ -79,21 +87,77 @@ class AnalysisCache:
                 self._stats[namespace]["misses"] += 1
                 return None
             self._stats[namespace]["hits"] += 1
-            return json.loads(raw)
+            envelope = json.loads(raw)
+            # Unwrap envelope written by set()
+            if isinstance(envelope, dict) and "_cached_at" in envelope:
+                cached_at = envelope["_cached_at"]
+                cached_price = envelope.get("_cached_price")
+                data = envelope["_data"]
+            else:
+                # Legacy entry without envelope
+                cached_at = None
+                cached_price = None
+                data = envelope
+            self._log_hit(key, namespace, source, ticker, cached_at, cached_price, price_now)
+            return data
         except Exception:
             self._stats[namespace]["misses"] += 1
             return None
 
-    def set(self, key: str, data: Any, namespace: str = "market", ttl: int | None = None) -> bool:
-        """Store value with TTL. Returns True on success."""
+    def set(self, key: str, data: Any, namespace: str = "market", ttl: int | None = None,
+            *, price: float | None = None) -> bool:
+        """Store value with TTL. Returns True on success.
+
+        Wraps *data* in an envelope containing ``_cached_at`` (epoch) and an
+        optional ``_cached_price`` so that future ``get()`` calls can report
+        staleness and price delta.
+        """
         if not self.available:
             return False
         try:
             ex = ttl if ttl is not None else self._ttls.get(namespace, 3600)
-            self._redis.set(self._key(namespace, key), json.dumps(data, default=str), ex=ex)
+            envelope: dict[str, Any] = {"_cached_at": time.time(), "_data": data}
+            if price is not None:
+                envelope["_cached_price"] = price
+            self._redis.set(self._key(namespace, key), json.dumps(envelope, default=str), ex=ex)
             return True
         except Exception:
             return False
+
+    # ------------------------------------------------------------------
+    # Staleness logging
+    # ------------------------------------------------------------------
+
+    def _log_hit(self, key: str, namespace: str, source: str,
+                 ticker: str | None, cached_at: float | None,
+                 cached_price: float | None, price_now: float | None) -> None:
+        """Emit [CACHE HIT] and optional [CACHE STALE WARNING] log lines."""
+        label = f"{ticker} {namespace}" if ticker else f"{namespace}:{key}"
+        if cached_at is None:
+            logger.info("[CACHE HIT] %s (source=%s)", label, source)
+            return
+
+        age_s = time.time() - cached_at
+        age_days = age_s / 86400
+        cached_date = datetime.fromtimestamp(cached_at, tz=timezone.utc).strftime("%Y-%m-%d")
+
+        # Price delta fragment
+        delta_str = ""
+        if cached_price and price_now and cached_price != 0:
+            delta_pct = (price_now - cached_price) / cached_price * 100
+            delta_str = f", {delta_pct:+.1f}% price delta"
+
+        age_label = f"{age_days:.0f}d" if age_days >= 1 else f"{age_s / 3600:.1f}h"
+        logger.info("[CACHE HIT] %s: cached %s (%s old%s, source=%s)",
+                    label, cached_date, age_label, delta_str, source)
+
+        # Stale warning when age exceeds 50% of namespace TTL
+        ns_ttl = self._ttls.get(namespace, 3600)
+        if age_s > ns_ttl * 0.5:
+            ttl_days = ns_ttl / 86400
+            ttl_label = f"{ttl_days:.0f}d" if ttl_days >= 1 else f"{ns_ttl / 3600:.1f}h"
+            logger.warning("[CACHE STALE WARNING] %s: cached %s (%s old, approaching %s TTL)",
+                           label, cached_date, age_label, ttl_label)
 
     def stats(self) -> dict[str, dict[str, int]]:
         """Return per-namespace hit/miss counts."""
