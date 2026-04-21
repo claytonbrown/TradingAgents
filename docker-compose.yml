@@ -1,10 +1,27 @@
 services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   tradingagents:
     build: .
     env_file:
       - .env
+    environment:
+      - CACHE_URL=redis://redis:6379
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
+    depends_on:
+      redis:
+        condition: service_healthy
     tty: true
     stdin_open: true
 
@@ -21,10 +38,14 @@ services:
       - .env
     environment:
       - LLM_PROVIDER=ollama
+      - CACHE_URL=redis://redis:6379
     volumes:
       - tradingagents_data:/home/appuser/.tradingagents
     depends_on:
-      - ollama
+      redis:
+        condition: service_healthy
+      ollama:
+        condition: service_started
     tty: true
     stdin_open: true
     profiles:
@@ -33,3 +54,4 @@ services:
 volumes:
   tradingagents_data:
   ollama_data:
+  redis_data:
