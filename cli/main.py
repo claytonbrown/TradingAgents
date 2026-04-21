@@ -926,7 +926,7 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = "", analysis_ttl: int | None = None, no_cache: bool = False):
+def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = "", analysis_ttl: int | None = None, no_cache: bool = False, reanalyze_pct: float | None = None):
     # First get all user selections
     selections = get_user_selections()
 
@@ -958,6 +958,10 @@ def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str =
     # Bypass all cache reads when --no-cache is set
     if no_cache:
         config["no_cache"] = True
+
+    # Override price-delta reanalysis threshold
+    if reanalyze_pct is not None:
+        config["reanalyze_pct"] = reanalyze_pct
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -1240,12 +1244,17 @@ def analyze(
         "--no-cache",
         help="Bypass all cache reads (Redis + filesystem TTL), force fresh analysis. Writes still happen.",
     ),
+    reanalyze_pct: float = typer.Option(
+        None,
+        "--reanalyze-pct",
+        help="Price-delta threshold (%). Reuse cached analysis when price moved less than this. 0 = always re-analyze. Default: 5.0.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url, analysis_ttl=analysis_ttl, no_cache=no_cache)
+    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url, analysis_ttl=analysis_ttl, no_cache=no_cache, reanalyze_pct=reanalyze_pct)
 
 
 if __name__ == "__main__":
