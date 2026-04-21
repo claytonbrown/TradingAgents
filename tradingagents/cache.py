@@ -7,7 +7,7 @@ system operates identically to an uncached run.
 Namespaces and default TTLs (seconds):
     market        3600   — yfinance price/target/consensus
     analysis     86400   — per-ticker LLM analysis results
-    news         14400   — news API responses
+    news         43200   — news/sentiment API responses (12h)
     fundamentals 43200   — financial statements, ratios
     indicators   14400   — technical indicator computations
 """
@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TTLS: dict[str, int] = {
     "market": 3600,
     "analysis": 86400,
-    "news": 14400,
+    "news": 43200,
     "fundamentals": 43200,
     "indicators": 14400,
 }
