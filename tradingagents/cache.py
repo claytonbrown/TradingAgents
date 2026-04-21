@@ -45,7 +45,7 @@ class AnalysisCache:
         # Explicit ttls parameter takes highest precedence
         base_ttls.update(ttls or {})
         self._ttls = base_ttls
-        self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"hits": 0, "misses": 0})
+        self._stats: dict[str, dict[str, int]] = defaultdict(lambda: {"hits": 0, "misses": 0, "skips": 0})
         self._redis = None
         try:
             import redis
@@ -64,9 +64,14 @@ class AnalysisCache:
     def _key(self, namespace: str, key: str) -> str:
         return f"ta:{namespace}:{key}"
 
+    def skip(self, namespace: str = "market") -> None:
+        """Record a cache skip (lookup bypassed because cache is unavailable or disabled)."""
+        self._stats[namespace]["skips"] += 1
+
     def get(self, key: str, namespace: str = "market") -> Any | None:
         """Return cached value or None (cache miss / unavailable)."""
         if not self.available:
+            self._stats[namespace]["skips"] += 1
             return None
         try:
             raw = self._redis.get(self._key(namespace, key))
@@ -98,6 +103,7 @@ class AnalysisCache:
         """Log cache statistics summary."""
         total_hits = sum(s["hits"] for s in self._stats.values())
         total_misses = sum(s["misses"] for s in self._stats.values())
-        logger.info("Cache stats — hits: %d, misses: %d", total_hits, total_misses)
+        total_skips = sum(s["skips"] for s in self._stats.values())
+        logger.info("Cache stats — hits: %d, misses: %d, skips: %d", total_hits, total_misses, total_skips)
         for ns, s in sorted(self._stats.items()):
-            logger.info("  %s: hits=%d misses=%d", ns, s["hits"], s["misses"])
+            logger.info("  %s: hits=%d misses=%d skips=%d", ns, s["hits"], s["misses"], s["skips"])

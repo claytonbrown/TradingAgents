@@ -79,5 +79,5 @@ def test_stats_tracks_hits_and_misses():
     cache.get("c", namespace="market")
     cache.get("d", namespace="news")
     s = cache.stats()
-    assert s["market"] == {"hits": 2, "misses": 1}
-    assert s["news"] == {"hits": 0, "misses": 1}
+    assert s["market"] == {"hits": 2, "misses": 1, "skips": 0}
+    assert s["news"] == {"hits": 0, "misses": 1, "skips": 0}
