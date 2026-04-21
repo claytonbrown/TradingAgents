@@ -348,7 +348,7 @@ class TradingAgentsGraph:
             "_reuse_reason": reason,
             "_reuse_age_days": round(age_days, 2) if age_days is not None else None,
             "_reuse_price_delta_pct": round(delta_pct, 2) if delta_pct is not None else None,
-            "_tenant_tier": tier,
+            "_tier": tier,
             "_cache_tier": cached.get("_cache_tier", tier),
         })
         # Overwrite trade_date to the current run date

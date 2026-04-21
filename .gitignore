@@ -218,12 +218,3 @@ __marimo__/
 # Cache
 **/data_cache/
 data/
-
-# Pipeline progress (ephemeral, reset each run)
-progress.txt
-.venv
-
-# CDK — unblock cdk/lib/ (root .gitignore has lib/ for Python packaging)
-!cdk/lib/
-tradingagents/results/
-README.html
