@@ -35,6 +35,8 @@ DEFAULT_CONFIG = {
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
+    # Redis cache (optional). Set URL to enable, empty string to disable.
+    "cache_url": os.getenv("TRADINGAGENTS_CACHE_URL", ""),
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {

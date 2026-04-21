@@ -1,4 +1,10 @@
+from __future__ import annotations
+
+import hashlib
+import logging
 from typing import Annotated
+
+logger = logging.getLogger(__name__)
 
 # Import from vendor-specific modules
 from .y_finance import (
@@ -116,6 +122,40 @@ def get_category_for_method(method: str) -> str:
             return category
     raise ValueError(f"Method '{method}' not found in any category")
 
+# Map data categories to cache namespaces (from tradingagents/cache.py)
+_CATEGORY_NAMESPACE = {
+    "core_stock_apis": "market",
+    "technical_indicators": "indicators",
+    "fundamental_data": "fundamentals",
+    "news_data": "news",
+}
+
+_cache_instance = None
+
+
+def _get_cache():
+    """Return shared AnalysisCache instance, or None if disabled."""
+    global _cache_instance
+    if _cache_instance is not None:
+        return _cache_instance if _cache_instance.available else None
+    url = get_config().get("cache_url", "")
+    if not url:
+        return None
+    try:
+        from tradingagents.cache import AnalysisCache
+        _cache_instance = AnalysisCache(url=url)
+    except Exception:
+        _cache_instance = object()  # sentinel so we don't retry
+        return None
+    return _cache_instance if _cache_instance.available else None
+
+
+def _cache_key(method: str, args, kwargs) -> str:
+    """Build a deterministic cache key from method name and arguments."""
+    parts = [method] + [str(a) for a in args] + sorted(f"{k}={v}" for k, v in kwargs.items())
+    raw = "|".join(parts)
+    return hashlib.sha256(raw.encode()).hexdigest()[:16]
+
 def get_vendor(category: str, method: str = None) -> str:
     """Get the configured vendor for a data category or specific tool method.
     Tool-level configuration takes precedence over category-level.
@@ -134,6 +174,17 @@ def get_vendor(category: str, method: str = None) -> str:
 def route_to_vendor(method: str, *args, **kwargs):
     """Route method calls to appropriate vendor implementation with fallback support."""
     category = get_category_for_method(method)
+    namespace = _CATEGORY_NAMESPACE.get(category)
+
+    # Check cache first
+    cache = _get_cache()
+    ck = _cache_key(method, args, kwargs) if cache and namespace else None
+    if ck:
+        cached = cache.get(ck, namespace=namespace)
+        if cached is not None:
+            logger.debug("Cache hit: %s %s", method, ck)
+            return cached
+
     vendor_config = get_vendor(category, method)
     primary_vendors = [v.strip() for v in vendor_config.split(',')]
 
@@ -155,7 +206,14 @@ def route_to_vendor(method: str, *args, **kwargs):
         impl_func = vendor_impl[0] if isinstance(vendor_impl, list) else vendor_impl
 
         try:
-            return impl_func(*args, **kwargs)
+            result = impl_func(*args, **kwargs)
+            # Store in cache on success
+            if ck and result is not None:
+                try:
+                    cache.set(ck, result, namespace=namespace)
+                except Exception:
+                    pass  # cache write failure is non-fatal
+            return result
         except AlphaVantageRateLimitError:
             continue  # Only rate limits trigger fallback
 
