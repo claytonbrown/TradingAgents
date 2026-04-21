@@ -8,7 +8,7 @@ Namespaces and default TTLs (seconds):
     market        3600   — yfinance price/target/consensus
     analysis     86400   — per-ticker LLM analysis results
     news         43200   — news/sentiment API responses (12h)
-    fundamentals 43200   — financial statements, ratios
+    fundamentals 86400   — financial statements, ratios (1 day)
     indicators   14400   — technical indicator computations
 """
 
@@ -27,7 +27,7 @@ DEFAULT_TTLS: dict[str, int] = {
     "market": 3600,
     "analysis": 86400,
     "news": 43200,
-    "fundamentals": 43200,
+    "fundamentals": 86400,
     "indicators": 14400,
 }
 

@@ -44,7 +44,7 @@ DEFAULT_CONFIG = {
         "market_data": 3600,
         "analysis": 604800,
         "news": 43200,
-        "fundamentals": 43200,
+        "fundamentals": 86400,
         "indicators": 14400,
     },
     # Data vendor configuration
