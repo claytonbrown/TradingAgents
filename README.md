@@ -248,6 +248,39 @@ ta = TradingAgentsGraph(config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 ```
 
+### Model Tiering
+
+Allocate expensive models to high-value analysis and cheaper models to routine checks. Three tiers map to the `deep_think_llm` and `quick_think_llm` config keys:
+
+| Tier | Models Used | When Assigned (auto mode) |
+|------|------------|--------------------------|
+| `deep` | `deep_think_llm` for all agents | Position value ≥ $20k or \|P&L\| ≥ 15% |
+| `standard` | `deep_think_llm` for all agents | Position value ≥ $5k or \|P&L\| ≥ 5% |
+| `light` | `quick_think_llm` for all agents | Everything else |
+
+**Python usage:**
+```python
+from tradingagents.model_tier import assign_tier, resolve_models
+
+config = DEFAULT_CONFIG.copy()
+config["model_tier"] = "auto"  # or "deep", "standard", "light"
+
+# Adjust thresholds
+config["model_tier_thresholds"] = {
+    "deep":     {"min_value": 20000, "min_abs_pnl_pct": 15},
+    "standard": {"min_value": 5000,  "min_abs_pnl_pct": 5},
+}
+
+# Per-ticker overrides (take precedence over auto-assignment)
+config["model_tier_overrides"] = {"NVDA": "deep", "VTI": "light"}
+
+tier = assign_tier("NVDA", position_value=25000, config=config)
+models = resolve_models(tier, config)
+```
+
+**Cost savings example:** A 30-ticker portfolio with 5 high-value, 10 mid-value, and 15 low-value positions:
+- Without tiering: 30 × $2.00 = **$60.00** (all use deep model)
+- With tiering: (5 × $2.00) + (10 × $2.00) + (15 × $0.50) = **$37.50** (37% savings)
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).

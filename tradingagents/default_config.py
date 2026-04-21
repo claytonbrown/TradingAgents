@@ -31,6 +31,13 @@ DEFAULT_CONFIG = {
     # Output language for analyst reports and final decision
     # Internal agent debate stays in English for reasoning quality
     "output_language": "English",
+    # Model tiering for cost optimization
+    "model_tier": "auto",               # "auto", "deep", "standard", or "light"
+    "model_tier_thresholds": {
+        "deep":     {"min_value": 20000, "min_abs_pnl_pct": 15},
+        "standard": {"min_value": 5000,  "min_abs_pnl_pct": 5},
+    },
+    "model_tier_overrides": {},          # per-ticker overrides, e.g. {"NVDA": "deep"}
     # Debate and discussion settings
     "max_debate_rounds": 1,
     "max_risk_discuss_rounds": 1,
