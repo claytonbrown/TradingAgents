@@ -926,7 +926,7 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False):
+def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = ""):
     # First get all user selections
     selections = get_user_selections()
 
@@ -944,6 +944,12 @@ def run_analysis(checkpoint: bool = False):
     config["anthropic_effort"] = selections.get("anthropic_effort")
     config["output_language"] = selections.get("output_language", "English")
     config["checkpoint_enabled"] = checkpoint
+
+    # Apply cache settings from CLI flags
+    if cache_url:
+        config["cache_url"] = cache_url
+    elif cache:
+        config["cache_url"] = "redis://localhost:6379/0"
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -1209,12 +1215,14 @@ def analyze(
         "--clear-checkpoints",
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
+    cache: bool = typer.Option(False, "--cache", help="Enable Redis cache with default URL redis://localhost:6379/0"),
+    cache_url: str = typer.Option("", "--cache-url", help="Custom Redis URL (implies --cache)"),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint)
+    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url)
 
 
 if __name__ == "__main__":
