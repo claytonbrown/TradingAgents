@@ -162,9 +162,38 @@ config["cache_url"] = "redis://localhost:6379/0"
 | `fundamentals` | 12 hours | Financial statements, ratios |
 | `indicators` | 4 hours | Technical indicator computations |
 
-**Docker Compose** already includes a Redis service. Just run:
+**Docker Compose** already includes a Redis service — no extra setup needed:
 ```bash
 docker compose run --rm tradingagents
+```
+
+The bundled `docker-compose.yml` defines a Redis sidecar with health checks:
+```yaml
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  tradingagents:
+    build: .
+    env_file:
+      - .env
+    environment:
+      - CACHE_URL=redis://redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+volumes:
+  redis_data:
 ```
 
 To run Redis standalone for local development:
