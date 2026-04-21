@@ -53,6 +53,9 @@ DEFAULT_CONFIG = {
     # tickers (short TTL) vs stable ETFs (long TTL).
     # Example: {"NVDA": 86400, "VTI": 2592000}  # volatile=1d, stable=30d
     "analysis_ttl_overrides": {},
+    # When True, bypass all cache reads (Redis + filesystem TTL). Cache writes
+    # still happen so results are available for subsequent runs.
+    "no_cache": False,
     # Price-delta threshold (%) for reusing cached analysis. If the ticker price
     # moved less than this since the last cached analysis, reuse it (with quick
     # LLM thesis confirmation). Set to 0 to always re-analyze.

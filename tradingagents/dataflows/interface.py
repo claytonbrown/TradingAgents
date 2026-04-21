@@ -178,10 +178,11 @@ def route_to_vendor(method: str, *args, **kwargs):
     category = get_category_for_method(method)
     namespace = _CATEGORY_NAMESPACE.get(category)
 
-    # Check cache first
+    # Check cache first (skip reads when no_cache is set)
     cache = _get_cache()
+    no_cache = get_config().get("no_cache", False)
     ck = _cache_key(method, args, kwargs) if cache and namespace else None
-    if ck:
+    if ck and not no_cache:
         cached = cache.get(ck, namespace=namespace)
         if cached is not None:
             logger.debug("Cache hit: %s %s", method, ck)

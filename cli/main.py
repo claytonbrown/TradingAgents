@@ -926,7 +926,7 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = "", analysis_ttl: int | None = None):
+def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = "", analysis_ttl: int | None = None, no_cache: bool = False):
     # First get all user selections
     selections = get_user_selections()
 
@@ -954,6 +954,10 @@ def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str =
     # Override analysis TTL if specified via CLI
     if analysis_ttl is not None:
         config["cache_ttl_overrides"] = {**config["cache_ttl_overrides"], "analysis": analysis_ttl}
+
+    # Bypass all cache reads when --no-cache is set
+    if no_cache:
+        config["no_cache"] = True
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -1231,12 +1235,17 @@ def analyze(
         "--analysis-ttl",
         help="Override analysis cache TTL in seconds (default: from config, 604800 = 7 days).",
     ),
+    no_cache: bool = typer.Option(
+        False,
+        "--no-cache",
+        help="Bypass all cache reads (Redis + filesystem TTL), force fresh analysis. Writes still happen.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url, analysis_ttl=analysis_ttl)
+    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url, analysis_ttl=analysis_ttl, no_cache=no_cache)
 
 
 if __name__ == "__main__":

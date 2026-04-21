@@ -223,10 +223,15 @@ class TradingAgentsGraph:
         """Check Redis (exact date) then filesystem TTL scan for a reusable analysis.
 
         Tier-aware: each tier reads only its own key. Platinum (TTL=0) always
-        skips cache reads.
+        skips cache reads. Bypassed entirely when ``no_cache`` is set.
 
         Returns the cached summary dict or None.
         """
+        # --no-cache: skip all cache reads
+        if self.config.get("no_cache", False):
+            logger.info("[ANALYSIS CACHE] %s %s: --no-cache set, skipping cache read", ticker, trade_date)
+            return None
+
         from tradingagents.cache import TIER_TTL_ZERO
 
         tier = self.config.get("cache_tier")
