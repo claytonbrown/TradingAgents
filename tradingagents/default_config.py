@@ -47,6 +47,11 @@ DEFAULT_CONFIG = {
         "fundamentals": 86400,
         "indicators": 14400,
     },
+    # Per-ticker analysis TTL overrides (seconds). Takes precedence over the
+    # "analysis" namespace TTL from cache_ttl_overrides. Useful for volatile
+    # tickers (short TTL) vs stable ETFs (long TTL).
+    # Example: {"NVDA": 86400, "VTI": 2592000}  # volatile=1d, stable=30d
+    "analysis_ttl_overrides": {},
     # Price-delta threshold (%) for reusing cached analysis. If the ticker price
     # moved less than this since the last cached analysis, reuse it (with quick
     # LLM thesis confirmation). Set to 0 to always re-analyze.

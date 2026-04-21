@@ -235,8 +235,12 @@ class TradingAgentsGraph:
             logger.info("[ANALYSIS CACHE] %s %s: platinum tier — skipping cache read", ticker, trade_date)
             return None
 
-        analysis_ttl = self.config.get("cache_ttl_overrides", {}).get(
-            "analysis", self.config.get("cache_ttl_seconds", 86400)
+        # Per-ticker override takes precedence over namespace TTL
+        analysis_ttl = self.config.get("analysis_ttl_overrides", {}).get(
+            ticker,
+            self.config.get("cache_ttl_overrides", {}).get(
+                "analysis", self.config.get("cache_ttl_seconds", 86400)
+            ),
         )
 
         # 1. Redis exact-date check (tier-suffixed key when tier is set)
