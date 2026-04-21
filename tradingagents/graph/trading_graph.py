@@ -2,6 +2,7 @@
 
 import logging
 import os
+import time
 from pathlib import Path
 import json
 from datetime import datetime, timedelta
@@ -187,6 +188,116 @@ class TradingAgentsGraph:
             ),
         }
 
+    # ------------------------------------------------------------------
+    # Analysis-level cache: Redis exact-date → filesystem TTL scan → LLM
+    # ------------------------------------------------------------------
+
+    @property
+    def _analyses_dir(self) -> Path:
+        return Path(self.config["results_dir"]) / "analyses"
+
+    def _get_analysis_cache(self):
+        """Return AnalysisCache instance or None."""
+        url = self.config.get("cache_url", "")
+        if not url:
+            return None
+        try:
+            from tradingagents.cache import AnalysisCache
+            if not hasattr(self, "_analysis_cache"):
+                self._analysis_cache = AnalysisCache(url=url, config=self.config)
+            return self._analysis_cache if self._analysis_cache.available else None
+        except Exception:
+            return None
+
+    def _get_current_price(self, ticker: str) -> float | None:
+        """Fetch latest closing price via yfinance (best-effort)."""
+        try:
+            data = yf.Ticker(ticker).history(period="1d")
+            if not data.empty:
+                return float(data["Close"].iloc[-1])
+        except Exception:
+            pass
+        return None
+
+    def _check_analysis_cache(self, ticker: str, trade_date: str) -> Dict[str, Any] | None:
+        """Check Redis (exact date) then filesystem TTL scan for a reusable analysis.
+
+        Returns the cached summary dict or None.
+        """
+        analysis_ttl = self.config.get("cache_ttl_overrides", {}).get(
+            "analysis", self.config.get("cache_ttl_seconds", 86400)
+        )
+
+        # 1. Redis exact-date check
+        cache = self._get_analysis_cache()
+        if cache:
+            redis_key = f"{ticker}:{trade_date}"
+            hit = cache.get(redis_key, namespace="analysis", ticker=ticker)
+            if hit is not None:
+                logger.info("[ANALYSIS CACHE] %s %s: Redis exact-date hit", ticker, trade_date)
+                return hit
+
+        # 2. Filesystem TTL scan
+        from tradingagents.cache import _find_recent_analysis
+        summary = _find_recent_analysis(ticker, trade_date, analysis_ttl, self._analyses_dir)
+        if summary is not None:
+            logger.info("[ANALYSIS CACHE] %s %s: filesystem TTL scan hit", ticker, trade_date)
+        return summary
+
+    def _price_delta_pct(self, cached_summary: Dict[str, Any], ticker: str) -> float | None:
+        """Compute price change % between cached analysis and now."""
+        cached_price = cached_summary.get("_cached_price")
+        if cached_price is None or cached_price == 0:
+            return None
+        current = self._get_current_price(ticker)
+        if current is None:
+            return None
+        return (current - cached_price) / cached_price * 100
+
+    def _confirm_thesis(self, cached_summary: Dict[str, Any], ticker: str, delta_pct: float) -> bool:
+        """Quick LLM check: does the cached thesis still hold given the price move?"""
+        decision = cached_summary.get("final_trade_decision", "")
+        if not decision:
+            return False
+        prompt = (
+            f"A previous analysis of {ticker} concluded:\n\n{decision[:2000]}\n\n"
+            f"Since then the price has moved {delta_pct:+.1f}%. "
+            "Does this thesis still hold? Answer YES or NO only."
+        )
+        try:
+            resp = self.quick_thinking_llm.invoke([("human", prompt)]).content.strip().upper()
+            confirmed = resp.startswith("YES")
+            logger.info("[THESIS CHECK] %s: %s (delta %.1f%%)", ticker, "confirmed" if confirmed else "invalidated", delta_pct)
+            return confirmed
+        except Exception:
+            return False
+
+    def _save_analysis_summary(self, ticker: str, trade_date: str, final_state: Dict[str, Any]) -> None:
+        """Write summary.json for future TTL scans and cache in Redis."""
+        summary = {
+            "company_of_interest": ticker,
+            "trade_date": trade_date,
+            "final_trade_decision": final_state.get("final_trade_decision", ""),
+            "investment_plan": final_state.get("investment_plan", ""),
+            "_cached_at": time.time(),
+        }
+        # Add current price for future delta checks
+        price = self._get_current_price(ticker)
+        if price is not None:
+            summary["_cached_price"] = price
+
+        # Filesystem
+        out_dir = self._analyses_dir / f"{ticker}_{trade_date}"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        (out_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+
+        # Redis
+        cache = self._get_analysis_cache()
+        if cache:
+            cache.set(f"{ticker}:{trade_date}", summary, namespace="analysis", price=price)
+
+    # ------------------------------------------------------------------
+
     def _fetch_returns(
         self, ticker: str, trade_date: str, holding_days: int = 5
     ) -> Tuple[Optional[float], Optional[float], Optional[int]]:
@@ -269,6 +380,32 @@ class TradingAgentsGraph:
         successful node on a subsequent invocation with the same ticker+date.
         """
         self.ticker = company_name
+        reanalyze_pct = self.config.get("reanalyze_pct", 5.0)
+
+        # --- Analysis-level cache check (before LLM calls) ---
+        cached = self._check_analysis_cache(company_name, str(trade_date))
+        if cached is not None:
+            delta = self._price_delta_pct(cached, company_name)
+            skip = False
+            if delta is not None and abs(delta) < reanalyze_pct:
+                if self._confirm_thesis(cached, company_name, delta):
+                    skip = True
+                    logger.info(
+                        "%s: %+.1f%% < %.0f%% threshold, reusing %s analysis",
+                        company_name, delta, reanalyze_pct, cached.get("trade_date", "?"),
+                    )
+            elif delta is None:
+                skip = True
+                logger.info("%s: no price delta available, reusing cached analysis", company_name)
+
+            if skip:
+                decision = cached.get("final_trade_decision", "")
+                final_state = self.propagator.create_initial_state(company_name, str(trade_date))
+                final_state["final_trade_decision"] = decision
+                final_state["investment_plan"] = cached.get("investment_plan", "")
+                final_state["trader_investment_plan"] = ""
+                self.curr_state = final_state
+                return final_state, self.process_signal(decision)
 
         # Resolve any pending memory-log entries for this ticker before the pipeline runs.
         self._resolve_pending_entries(company_name)
@@ -343,6 +480,9 @@ class TradingAgentsGraph:
             clear_checkpoint(
                 self.config["data_cache_dir"], company_name, str(trade_date)
             )
+
+        # Save analysis summary for future TTL reuse
+        self._save_analysis_summary(company_name, str(trade_date), final_state)
 
         return final_state, self.process_signal(final_state["final_trade_decision"])
 

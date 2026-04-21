@@ -47,6 +47,10 @@ DEFAULT_CONFIG = {
         "fundamentals": 86400,
         "indicators": 14400,
     },
+    # Price-delta threshold (%) for reusing cached analysis. If the ticker price
+    # moved less than this since the last cached analysis, reuse it (with quick
+    # LLM thesis confirmation). Set to 0 to always re-analyze.
+    "reanalyze_pct": 5.0,
     # Data vendor configuration
     # Category-level configuration (default for all tools in category)
     "data_vendors": {
