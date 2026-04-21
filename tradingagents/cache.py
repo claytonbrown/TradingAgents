@@ -19,6 +19,7 @@ import logging
 import time
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -30,6 +31,68 @@ DEFAULT_TTLS: dict[str, int] = {
     "fundamentals": 86400,
     "indicators": 14400,
 }
+
+
+def _find_recent_analysis(
+    ticker: str,
+    date: str,
+    ttl_seconds: int,
+    analyses_dir: str | Path,
+) -> dict[str, Any] | None:
+    """Scan ``analyses_dir/{TICKER}_*/summary.json`` and return the most recent within *ttl_seconds* of *date*.
+
+    Args:
+        ticker: Stock symbol (e.g. ``"NVDA"``).
+        date: Reference date as ``YYYY-MM-DD``.
+        ttl_seconds: Maximum age in seconds for a cached analysis to be valid.
+        analyses_dir: Root directory containing ``{TICKER}_{date}[_{tier}]/summary.json`` folders.
+
+    Returns:
+        Parsed summary dict from the most recent valid ``summary.json``, or ``None``.
+    """
+    base = Path(analyses_dir)
+    if not base.is_dir():
+        return None
+
+    ref = datetime.strptime(date, "%Y-%m-%d")
+    best: tuple[datetime, dict[str, Any]] | None = None
+
+    for summary_path in sorted(base.glob(f"{ticker}_*/summary.json"), reverse=True):
+        dir_name = summary_path.parent.name  # e.g. NVDA_2026-04-14 or NVDA_2026-04-14_bronze
+        parts = dir_name.split("_", 1)
+        if len(parts) < 2:
+            continue
+        # Extract date portion (second segment, may have trailing _tier)
+        date_str = parts[1][:10]
+        try:
+            analysis_date = datetime.strptime(date_str, "%Y-%m-%d")
+        except ValueError:
+            continue
+
+        age_seconds = (ref - analysis_date).total_seconds()
+        if age_seconds < 0 or age_seconds > ttl_seconds:
+            continue
+
+        # Candidate is within TTL window — keep the most recent
+        if best is None or analysis_date > best[0]:
+            try:
+                data = json.loads(summary_path.read_text(encoding="utf-8"))
+                best = (analysis_date, data)
+            except (json.JSONDecodeError, OSError):
+                continue
+
+    if best is None:
+        return None
+
+    age_days = (ref - best[0]).total_seconds() / 86400
+    logger.info(
+        "[TTL SCAN] %s: reusing %s analysis (%.1fd old, TTL %dd)",
+        ticker,
+        best[0].strftime("%Y-%m-%d"),
+        age_days,
+        ttl_seconds // 86400,
+    )
+    return best[1]
 
 
 class AnalysisCache:
