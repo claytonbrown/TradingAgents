@@ -41,6 +41,9 @@ bedrock = [
 [project.scripts]
 tradingagents = "cli.main:app"
 
+[tool.pytest.ini_options]
+markers = ["bedrock: requires AWS credentials and Bedrock access (opt-in)"]
+
 [tool.setuptools.packages.find]
 include = ["tradingagents*", "cli*"]
 
