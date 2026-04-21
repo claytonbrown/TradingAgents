@@ -131,13 +131,15 @@ _CATEGORY_NAMESPACE = {
 }
 
 _cache_instance = None
+_cache_checked = False
 
 
 def _get_cache():
     """Return shared AnalysisCache instance, or None if disabled."""
-    global _cache_instance
-    if _cache_instance is not None:
-        return _cache_instance if _cache_instance.available else None
+    global _cache_instance, _cache_checked
+    if _cache_checked:
+        return _cache_instance if _cache_instance and _cache_instance.available else None
+    _cache_checked = True
     url = get_config().get("cache_url", "")
     if not url:
         return None
@@ -145,7 +147,7 @@ def _get_cache():
         from tradingagents.cache import AnalysisCache
         _cache_instance = AnalysisCache(url=url, config=get_config())
     except Exception:
-        _cache_instance = object()  # sentinel so we don't retry
+        _cache_instance = None
         return None
     return _cache_instance if _cache_instance.available else None
 
