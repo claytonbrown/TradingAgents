@@ -926,7 +926,7 @@ def format_tool_args(args, max_length=80) -> str:
         return result[:max_length - 3] + "..."
     return result
 
-def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = ""):
+def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str = "", analysis_ttl: int | None = None):
     # First get all user selections
     selections = get_user_selections()
 
@@ -950,6 +950,10 @@ def run_analysis(checkpoint: bool = False, cache: bool = False, cache_url: str =
         config["cache_url"] = cache_url
     elif cache:
         config["cache_url"] = "redis://localhost:6379/0"
+
+    # Override analysis TTL if specified via CLI
+    if analysis_ttl is not None:
+        config["cache_ttl_overrides"] = {**config["cache_ttl_overrides"], "analysis": analysis_ttl}
 
     # Create stats callback handler for tracking LLM/tool calls
     stats_handler = StatsCallbackHandler()
@@ -1222,12 +1226,17 @@ def analyze(
         envvar="REDIS_URL",
         help="Redis URL for caching (default: REDIS_URL env var, fallback: disabled). Implies --cache.",
     ),
+    analysis_ttl: int = typer.Option(
+        None,
+        "--analysis-ttl",
+        help="Override analysis cache TTL in seconds (default: from config, 604800 = 7 days).",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints
         n = clear_all_checkpoints(DEFAULT_CONFIG["data_cache_dir"])
         console.print(f"[yellow]Cleared {n} checkpoint(s).[/yellow]")
-    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url)
+    run_analysis(checkpoint=checkpoint, cache=cache, cache_url=cache_url, analysis_ttl=analysis_ttl)
 
 
 if __name__ == "__main__":
