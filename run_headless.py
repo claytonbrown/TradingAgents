@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json as _json
 import logging
-import os
 import sys
 import threading
 import time
