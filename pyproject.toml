@@ -32,6 +32,9 @@ dependencies = [
     "yfinance>=0.2.63",
 ]
 
+[project.optional-dependencies]
+execution = ["alpaca-py>=0.30.0"]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 

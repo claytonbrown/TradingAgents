@@ -386,6 +386,91 @@ class TradingAgentsGraph:
         with open(log_path, "w", encoding="utf-8") as f:
             json.dump(self.log_states_dict[str(trade_date)], f, indent=4)
 
+    def reflect_and_remember(self, returns_losses):
+        """Reflect on decisions and update memory based on returns."""
+        self.reflector.reflect_bull_researcher(
+            self.curr_state, returns_losses, self.bull_memory
+        )
+        self.reflector.reflect_bear_researcher(
+            self.curr_state, returns_losses, self.bear_memory
+        )
+        self.reflector.reflect_trader(
+            self.curr_state, returns_losses, self.trader_memory
+        )
+        self.reflector.reflect_invest_judge(
+            self.curr_state, returns_losses, self.invest_judge_memory
+        )
+        self.reflector.reflect_portfolio_manager(
+            self.curr_state, returns_losses, self.portfolio_manager_memory
+        )
+
+    def execute(
+        self,
+        final_state: Dict[str, Any],
+        decision: str,
+        prices: Dict[str, float],
+        held_positions: Optional[Dict[str, float]] = None,
+        buying_power: Optional[float] = None,
+    ) -> List:
+        """Optionally execute trades based on a propagate() result.
+
+        Call this AFTER propagate() to submit orders through the execution
+        module.  Does nothing when ``execution_enabled`` is False (default).
+
+        Args:
+            final_state: First element returned by propagate().
+            decision: Second element returned by propagate() (5-tier rating).
+            prices: ``{ticker: current_price}`` for value-limit checks.
+            held_positions: ``{ticker: held_qty}`` (optional, for sell sizing).
+            buying_power: Account buying power for position sizing.
+
+        Returns:
+            List of OrderResult, or empty list when execution is disabled.
+        """
+        if not self.config.get("execution_enabled", False):
+            return []
+
+        from tradingagents.execution import (
+            ExecutionConfig,
+            decision_to_orders,
+            execute_orders,
+        )
+
+        ticker = final_state.get("company_of_interest", self.ticker)
+        rating = decision.strip().upper()
+        current_price = prices.get(ticker, 0.0)
+        held_qty = (held_positions or {}).get(ticker, 0.0)
+
+        mode = self.config.get("execution_mode", "dry_run")
+        config = ExecutionConfig(
+            position_size_pct=self.config.get("execution_position_size_pct", 2.0),
+            max_order_value=self.config.get("execution_max_order_value", 10_000),
+            max_total_value=self.config.get("execution_max_total_value", 50_000),
+            log_path=self.config.get("execution_log_path", "data/execution_log.jsonl"),
+            buying_power=buying_power,
+        )
+
+        orders = decision_to_orders(
+            ticker=ticker,
+            rating=rating,
+            buying_power=buying_power or 0.0,
+            current_price=current_price,
+            position_size_pct=config.position_size_pct,
+            held_qty=held_qty,
+        )
+
+        if not orders:
+            return []
+
+        return execute_orders(
+            orders=orders,
+            prices=prices,
+            config=config,
+            execute=(mode in ("paper", "live")),
+            paper=(mode != "live"),
+            execute_live=(mode == "live"),
+        )
+
     def process_signal(self, full_signal):
         """Process a signal to extract the core decision."""
         return self.signal_processor.process_signal(full_signal)

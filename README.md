@@ -248,6 +248,104 @@ ta = TradingAgentsGraph(config=config)
 _, decision = ta.propagate("NVDA", "2026-01-15")
 ```
 
+## Broker Execution (Alpaca)
+
+TradingAgents can optionally execute trades through [Alpaca](https://alpaca.markets/) after the multi-agent analysis completes. The execution module converts 5-tier portfolio decisions into broker orders with multiple safety gates.
+
+### Installation
+
+```bash
+pip install '.[execution]'   # installs alpaca-py
+```
+
+### Execution Modes
+
+| Mode | Flag | Description |
+|------|------|-------------|
+| Dry-run | *(default)* | Logs orders, no API calls |
+| Paper | `--execute --paper` | Submits to Alpaca paper trading |
+| Live | `--execute-live` + `APCA_PAPER=false` | Real money — double opt-in required |
+
+### Safety Gates
+
+1. **Credential check** — refuses to execute if `APCA_API_KEY_ID` or `APCA_API_SECRET_KEY` are missing
+2. **Value guardrails** — rejects orders exceeding `EXECUTION_MAX_ORDER_VALUE` (default $10,000) or batch total exceeding `EXECUTION_MAX_TOTAL_VALUE` (default $50,000)
+3. **Double opt-in** — live mode requires BOTH `--execute-live` flag AND `APCA_PAPER=false` env var
+4. **Approval gate** — live orders require explicit human approval before submission
+
+### Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `APCA_API_KEY_ID` | Alpaca API key | *(required for paper/live)* |
+| `APCA_API_SECRET_KEY` | Alpaca API secret | *(required for paper/live)* |
+| `APCA_PAPER` | `true` for paper, `false` for live | `true` |
+| `EXECUTION_POSITION_SIZE_PCT` | % of buying power per trade | `2.0` |
+| `EXECUTION_MAX_ORDER_VALUE` | Max single order value ($) | `10000` |
+| `EXECUTION_MAX_TOTAL_VALUE` | Max batch total value ($) | `50000` |
+
+### Decision-to-Order Mapping
+
+| Rating | Action | Size |
+|--------|--------|------|
+| BUY | Buy | 100% of position size |
+| OVERWEIGHT | Buy | 50% of position size |
+| HOLD | Skip | — |
+| UNDERWEIGHT | Sell | 50% of held position |
+| SELL | Sell | 100% of held position |
+
+### Python Usage
+
+```python
+from tradingagents.graph.trading_graph import TradingAgentsGraph
+from tradingagents.default_config import DEFAULT_CONFIG
+
+config = DEFAULT_CONFIG.copy()
+config["execution_enabled"] = True
+config["execution_mode"] = "paper"  # "dry_run", "paper", or "live"
+
+ta = TradingAgentsGraph(debug=True, config=config)
+final_state, decision = ta.propagate("NVDA", "2026-01-15")
+
+# Execute based on the decision
+results = ta.execute(
+    final_state, decision,
+    prices={"NVDA": 142.50},
+    buying_power=100_000.0,
+)
+```
+
+Or use the lower-level API directly:
+
+```python
+from tradingagents.execution import decision_to_orders, execute_orders
+
+orders = decision_to_orders("NVDA", "BUY", buying_power=100_000, current_price=142.50)
+results = execute_orders(orders, prices={"NVDA": 142.50}, execute=True, paper=True)
+```
+
+### Supported Order Types
+
+Market, limit, bracket (with take-profit and stop-loss), and trailing stop orders via the `alpaca-py` SDK.
+
+### Execution Log
+
+All orders are logged to `data/execution_log.jsonl` (configurable via `execution_log_path`).
+
+### Module Structure
+
+```
+tradingagents/execution/
+├── __init__.py        # Public API exports
+├── schemas.py         # TradeOrder, OrderResult, ExecutionConfig
+├── base.py            # BrokerClient ABC
+├── alpaca_client.py   # Alpaca implementation
+├── converter.py       # Decision → order mapping
+├── executor.py        # Safety-gated orchestrator
+├── approval.py        # Human approval gate
+└── logger.py          # JSONL execution logger
+```
+
 ## Contributing
 
 We welcome contributions from the community! Whether it's fixing a bug, improving documentation, or suggesting a new feature, your input helps make this project better. If you are interested in this line of research, please consider joining our open-source financial AI research community [Tauric Research](https://tauric.ai/).
