@@ -32,6 +32,12 @@ dependencies = [
     "yfinance>=0.2.63",
 ]
 
+[project.optional-dependencies]
+bedrock = [
+    "boto3>=1.35.0",
+    "langchain-aws>=0.2.6",
+]
+
 [project.scripts]
 tradingagents = "cli.main:app"
 
