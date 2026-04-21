@@ -99,6 +99,16 @@ MODEL_OPTIONS: ProviderModeOptions = {
             ("Custom model ID", "custom"),
         ],
     },
+    "bedrock": {
+        "quick": [
+            ("Claude Haiku (Bedrock) - Fast, near-instant", "claude-haiku"),
+            ("Claude Sonnet (Bedrock) - Balanced speed/intelligence", "claude-sonnet"),
+        ],
+        "deep": [
+            ("Claude Opus (Bedrock) - Most capable", "claude-opus"),
+            ("Claude Sonnet (Bedrock) - Balanced speed/intelligence", "claude-sonnet"),
+        ],
+    },
     # OpenRouter: fetched dynamically. Azure: any deployed model name.
     "ollama": {
         "quick": [
