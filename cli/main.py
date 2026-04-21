@@ -1216,7 +1216,12 @@ def analyze(
         help="Delete all saved checkpoints before running (force fresh start).",
     ),
     cache: bool = typer.Option(False, "--cache", help="Enable Redis cache with default URL redis://localhost:6379/0"),
-    cache_url: str = typer.Option("", "--cache-url", help="Custom Redis URL (implies --cache)"),
+    cache_url: str = typer.Option(
+        "",
+        "--cache-url",
+        envvar="REDIS_URL",
+        help="Redis URL for caching (default: REDIS_URL env var, fallback: disabled). Implies --cache.",
+    ),
 ):
     if clear_checkpoints:
         from tradingagents.graph.checkpointer import clear_all_checkpoints

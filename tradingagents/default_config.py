@@ -36,7 +36,8 @@ DEFAULT_CONFIG = {
     "max_risk_discuss_rounds": 1,
     "max_recur_limit": 100,
     # Redis cache (optional). Set URL to enable, empty string to disable.
-    "cache_url": os.getenv("TRADINGAGENTS_CACHE_URL", ""),
+    # Checks TRADINGAGENTS_CACHE_URL first, then REDIS_URL (standard hosting env var).
+    "cache_url": os.getenv("TRADINGAGENTS_CACHE_URL", os.getenv("REDIS_URL", "")),
     # Default TTL for all cached entries (seconds). 86400 = 1 day.
     "cache_ttl_seconds": 86400,
     # Per-namespace TTL overrides (seconds). Namespaces not listed use cache_ttl_seconds.
