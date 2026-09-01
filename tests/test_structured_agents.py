@@ -15,6 +15,7 @@ from pydantic import ValidationError
 from tradingagents.agents.analysts.sentiment_analyst import create_sentiment_analyst
 from tradingagents.agents.managers.research_manager import create_research_manager
 from tradingagents.agents.schemas import (
+    PortfolioDecision,
     PortfolioRating,
     ResearchPlan,
     SentimentBand,
@@ -26,7 +27,6 @@ from tradingagents.agents.schemas import (
     render_trader_proposal,
 )
 from tradingagents.agents.trader.trader import create_trader
-
 
 # ---------------------------------------------------------------------------
 # Render functions
@@ -69,6 +69,36 @@ class TestRenderTraderProposal:
 
 
 @pytest.mark.unit
+class TestNullishFloatCoercion:
+    """A weak LLM may write "None"/"N/A" into an optional float field (#1058);
+    coerce those to None so the structured call validates instead of erroring."""
+
+    def test_trader_nullish_strings_coerce_to_none(self):
+        for sentinel in ("None", "N/A", "null", "-", "", "TBD"):
+            p = TraderProposal(
+                action=TraderAction.HOLD,
+                reasoning="x",
+                entry_price=sentinel,
+                stop_loss=sentinel,
+            )
+            assert p.entry_price is None
+            assert p.stop_loss is None
+
+    def test_trader_real_numeric_string_still_parses(self):
+        p = TraderProposal(action=TraderAction.BUY, reasoning="x", entry_price="189.5")
+        assert p.entry_price == 189.5
+
+    def test_pm_nullish_price_target_coerces_to_none(self):
+        d = PortfolioDecision(
+            rating=PortfolioRating.OVERWEIGHT,
+            executive_summary="s",
+            investment_thesis="t",
+            price_target="N/A",
+        )
+        assert d.price_target is None
+
+
+@pytest.mark.unit
 class TestRenderResearchPlan:
     def test_required_fields(self):
         p = ResearchPlan(
@@ -101,6 +131,7 @@ def _make_trader_state():
     return {
         "company_of_interest": "NVDA",
         "investment_plan": "**Recommendation**: Buy\n**Rationale**: ...\n**Strategic Actions**: ...",
+        "market_report": "Current price $189.5; 14-day ATR 4.2; support $178, resistance $196.",
     }
 
 
@@ -120,6 +151,24 @@ def _structured_trader_llm(captured: dict, proposal: TraderProposal | None = Non
     llm = MagicMock()
     llm.with_structured_output.return_value = structured
     return llm
+
+
+@pytest.mark.unit
+def test_invoke_structured_falls_back_when_result_is_none():
+    # A thinking model can answer in plain text, leaving the parser with None.
+    # That must fall back to free text, not crash on render(None) (#1051).
+    from tradingagents.agents.utils.structured import invoke_structured_or_freetext
+
+    structured = MagicMock()
+    structured.invoke.return_value = None
+    plain = MagicMock()
+    plain.invoke.return_value = MagicMock(content="FREETEXT")
+
+    out = invoke_structured_or_freetext(
+        structured, plain, "prompt", render=lambda r: r.rating, agent_name="t"
+    )
+    assert out == "FREETEXT"
+    plain.invoke.assert_called_once()
 
 
 @pytest.mark.unit
@@ -151,6 +200,31 @@ class TestTraderAgent:
         # The investment plan is in the user message of the captured prompt.
         prompt = captured["prompt"]
         assert any("Proposed Investment Plan" in m["content"] for m in prompt)
+
+    def test_prompt_includes_market_report_for_price_levels(self):
+        # #1167: the Trader must see the technical market report so entry/stop
+        # levels are grounded in real price structure, not just the digested plan.
+        captured = {}
+        trader = create_trader(_structured_trader_llm(captured))
+        trader(_make_trader_state())
+        user = " ".join(m["content"] for m in captured["prompt"] if m["role"] == "user")
+        system = " ".join(m["content"] for m in captured["prompt"] if m["role"] == "system")
+        assert "Technical Market Report:" in user
+        assert "14-day ATR 4.2" in user            # the actual report content reached the Trader
+        assert "support $178, resistance $196" in user
+        assert "Ground concrete price levels" in system
+
+    def test_empty_market_report_omits_the_section_and_grounding(self):
+        # #1167: when the market analyst wasn't selected the report is empty, so
+        # don't tell the Trader to ground levels in a report it doesn't have.
+        captured = {}
+        state = _make_trader_state()
+        state["market_report"] = ""
+        create_trader(_structured_trader_llm(captured))(state)
+        text = " ".join(m["content"] for m in captured["prompt"])
+        assert "Technical Market Report:" not in text
+        assert "Ground concrete price levels" not in text
+        assert "Proposed Investment Plan" in text  # still present
 
     def test_falls_back_to_freetext_when_structured_unavailable(self):
         plain_response = (

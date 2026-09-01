@@ -19,9 +19,21 @@ so that:
 from __future__ import annotations
 
 from enum import Enum
-from typing import Literal, Optional
+from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+# LLMs sometimes write a placeholder string ("None", "N/A", ...) into an optional
+# numeric field instead of omitting it. Coerce those to None so the structured
+# call validates instead of erroring (#1058). Pydantic still parses real numeric
+# strings ("189.5") to float.
+_NULLISH_FLOAT = {"", "none", "n/a", "na", "null", "nil", "-", "tbd", "unknown"}
+
+
+def _coerce_optional_float(value):
+    if isinstance(value, str) and value.strip().lower() in _NULLISH_FLOAT:
+        return None
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -70,9 +82,11 @@ class ResearchPlan(BaseModel):
     recommendation: PortfolioRating = Field(
         description=(
             "The investment recommendation. Exactly one of Buy / Overweight / "
-            "Hold / Underweight / Sell. Reserve Hold for situations where the "
-            "evidence on both sides is genuinely balanced; otherwise commit to "
-            "the side with the stronger arguments."
+            "Hold / Underweight / Sell. Choose Hold when the evidence is "
+            "balanced, materially conflicting, ambiguous, or insufficient to "
+            "justify changing exposure; otherwise commit to the side with the "
+            "clearly stronger arguments. Do not pick a direction merely to be "
+            "decisive."
         ),
     )
     rationale: str = Field(
@@ -124,18 +138,23 @@ class TraderProposal(BaseModel):
             "the research plan. Two to four sentences."
         ),
     )
-    entry_price: Optional[float] = Field(
+    entry_price: float | None = Field(
         default=None,
         description="Optional entry price target in the instrument's quote currency.",
     )
-    stop_loss: Optional[float] = Field(
+    stop_loss: float | None = Field(
         default=None,
         description="Optional stop-loss price in the instrument's quote currency.",
     )
-    position_sizing: Optional[str] = Field(
+    position_sizing: str | None = Field(
         default=None,
         description="Optional sizing guidance, e.g. '5% of portfolio'.",
     )
+
+    @field_validator("entry_price", "stop_loss", mode="before")
+    @classmethod
+    def _nullish_float_to_none(cls, v):
+        return _coerce_optional_float(v)
 
 
 def render_trader_proposal(proposal: TraderProposal) -> str:
@@ -180,7 +199,10 @@ class PortfolioDecision(BaseModel):
     rating: PortfolioRating = Field(
         description=(
             "The final position rating. Exactly one of Buy / Overweight / Hold / "
-            "Underweight / Sell, picked based on the analysts' debate."
+            "Underweight / Sell, picked based on the analysts' debate. Choose "
+            "Hold when the case is balanced, materially conflicting, ambiguous, "
+            "or insufficient to justify changing exposure, rather than forcing a "
+            "direction to appear decisive."
         ),
     )
     executive_summary: str = Field(
@@ -196,14 +218,19 @@ class PortfolioDecision(BaseModel):
             "incorporate them; otherwise rely solely on the current analysis."
         ),
     )
-    price_target: Optional[float] = Field(
+    price_target: float | None = Field(
         default=None,
         description="Optional target price in the instrument's quote currency.",
     )
-    time_horizon: Optional[str] = Field(
+    time_horizon: str | None = Field(
         default=None,
         description="Optional recommended holding period, e.g. '3-6 months'.",
     )
+
+    @field_validator("price_target", mode="before")
+    @classmethod
+    def _nullish_float_to_none(cls, v):
+        return _coerce_optional_float(v)
 
 
 def render_pm_decision(decision: PortfolioDecision) -> str:
@@ -296,7 +323,9 @@ class SentimentReport(BaseModel):
             "(3) dominant narrative themes; "
             "(4) catalysts and risks surfaced by the data; "
             "(5) a markdown table summarising key sentiment signals, their "
-            "direction, source, and supporting evidence."
+            "direction, source, and supporting evidence. "
+            "Keep it informative and substantive: develop each section thoroughly "
+            "with concrete evidence so every point adds new signal for the trader."
         ),
     )
 
